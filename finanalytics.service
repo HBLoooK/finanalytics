@@ -1,0 +1,26 @@
+# Systemd unit for a always-on Finanalytics server.
+#   sudo cp finanalytics.service /etc/systemd/system/
+#   sudo systemctl enable --now finanalytics
+[Unit]
+Description=Finanalytics personal finance server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/finanalytics
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=HOST=127.0.0.1
+Environment=FINANALYTICS_DB=/opt/finanalytics/data/finanalytics.db
+# Set this when you bind to something other than localhost:
+# Environment=FINANALYTICS_TOKEN=change-me
+ExecStart=/usr/bin/node server/index.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/finanalytics/data
+
+[Install]
+WantedBy=multi-user.target
