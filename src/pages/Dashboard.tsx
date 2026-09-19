@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { ArrowDownRight, ArrowUpRight, ChevronDown, PiggyBank } from 'lucide-react'
@@ -10,6 +10,9 @@ import { Card, ChartTooltip, Gauge, Legend, Money, Empty, axisProps, useCountUp,
 import { BankCard } from './Wallet'
 import { DrillDown, type DrillFilter } from '../components/DrillDown'
 import { WeekDigest } from '../components/WeekDigest'
+import { DailyCheckIn } from '../components/DailyCheckIn'
+import { CoachCard } from '../components/CoachCard'
+import { InfoTip } from '../components/InfoTip'
 
 const P = '#6270f2'
 const M = '#e05be0'
@@ -34,6 +37,11 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
 }
 
 export function Dashboard() {
+  // Insight badges count the analysis you actually open.
+  useEffect(() => {
+    useStore.getState().bumpStat('forecastViews')
+  }, [])
+
   const { accounts, transactions, categories, budgets, holdings, debts, settings, recurring, goals } = useStore()
   const conv = useConverter()
   const money = useMoney()
@@ -88,17 +96,41 @@ export function Dashboard() {
 
   return (
     <div className="grid dash-grid">
+      {/* ---- DAILY CHECK-IN + COACH ---- */}
+      <div className="col-6">
+        <DailyCheckIn />
+      </div>
+      <div className="col-6">
+        <CoachCard />
+      </div>
+
       {/* ---- SAFE TO SPEND ---- */}
       {settings.safeToSpend !== false && (
         <Card
           className="col-12"
           title="Safe to spend"
-          sub={safe.nextIncomeDate ? `Money left after bills until your next income on ${fmtDate(safe.nextIncomeDate, settings.locale)}` : 'Money left after bills for the next 30 days'}
           action={
-            <span className={`pill ${safe.value < 0 ? 'danger' : ''}`} style={{ color: safe.value < 0 ? 'var(--red)' : 'var(--green)' }}>
-              {safe.value < 0 ? 'Over-committed' : `${money(safe.perDay)} / day`}
+            <span className="flex" style={{ alignItems: 'center', gap: 8 }}>
+              <span className={`pill ${safe.value < 0 ? 'danger' : ''}`} style={{ color: safe.value < 0 ? 'var(--red)' : 'var(--green)' }}>
+                {safe.value < 0 ? 'Over-committed' : `${money(safe.perDay)} / day`}
+              </span>
+              <InfoTip
+                id="safe-to-spend"
+                maths={
+                  <ul className="metric-list">
+                    <li><span>Liquid balance</span><b>{money(safe.liquid)}</b></li>
+                    <li><span>Bills before next income</span><b>−{money(safe.billsDue)}</b></li>
+                    <li><span>Budget not yet spent</span><b>−{money(safe.budgetLeft)}</b></li>
+                    <li><span>Goal contributions</span><b>−{money(safe.goalDue)}</b></li>
+                    <li><span>Pending out</span><b>−{money(safe.pendingOut)}</b></li>
+                    <li><span>Safe to spend</span><b>{money(safe.value)}</b></li>
+                    <li><span>Per day until {safe.horizon}</span><b>{money(safe.perDay)}</b></li>
+                  </ul>
+                }
+              />
             </span>
           }
+          sub={safe.nextIncomeDate ? `Money left after bills until your next income on ${fmtDate(safe.nextIncomeDate, settings.locale)}` : 'Money left after bills for the next 30 days'}
         >
           <div className="safe-card">
             <div>

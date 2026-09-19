@@ -13,8 +13,10 @@ import type {
   Transaction,
 } from './types'
 import { addDays, pad, toISODate, today, uid } from './utils'
+import { emptyProgress, seedProgressFromHistory } from './gamification'
+import type { GamificationSettings } from './types'
 
-export const DATA_VERSION = 3
+export const DATA_VERSION = 4
 
 // Palette lifted from the reference: indigo, magenta, yellow, green, orange + supporting tones
 export const CATEGORY_COLORS = [
@@ -120,6 +122,16 @@ export const defaultAccounts: Account[] = [
   },
 ]
 
+/** Progression defaults: everything on, but never intrusive. */
+export const defaultGamification: GamificationSettings = {
+  enabled: true,
+  celebrations: true,
+  coach: true,
+  quietHours: [21, 8],
+  pinnedTitle: null,
+  showTips: true,
+}
+
 export const defaultSettings: Settings = {
   name: 'Alex Morgan',
   currency: 'USD',
@@ -137,6 +149,8 @@ export const defaultSettings: Settings = {
   autoLockMinutes: 0,
   aliases: [],
   savedViews: [],
+  gamification: { ...defaultGamification },
+  tourSeen: [],
 }
 
 function mulberry32(seed: number) {
@@ -311,7 +325,7 @@ export const defaultRules: Rule[] = [
 ]
 
 export function demoData(): AppData {
-  return {
+  const base: AppData = {
     version: DATA_VERSION,
     accounts: structuredClone(defaultAccounts),
     categories: structuredClone(defaultCategories),
@@ -325,6 +339,9 @@ export function demoData(): AppData {
     rules: structuredClone(defaultRules),
     settings: { ...structuredClone(defaultSettings), lastRecurringRun: today(), onboarded: false },
   }
+  // The demo ships with a history, so it ships with the progression that history implies.
+  const { version: _version, ...ctx } = base
+  return { ...base, progress: seedProgressFromHistory(ctx) }
 }
 
 export function emptyData(): AppData {
@@ -341,5 +358,6 @@ export function emptyData(): AppData {
     debtPayments: [],
     rules: structuredClone(defaultRules),
     settings: { ...structuredClone(defaultSettings), name: 'You', lastRecurringRun: today(), onboarded: false },
+    progress: emptyProgress(),
   }
 }

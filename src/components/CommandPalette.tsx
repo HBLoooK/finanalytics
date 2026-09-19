@@ -30,6 +30,9 @@ const NAV: [string, string][] = [
   ['/reports', 'Reports'],
   ['/health', 'Data health'],
   ['/review', 'Year in review'],
+  ['/progress', 'Progress'],
+  ['/weekly', 'Weekly review'],
+  ['/help', 'Help centre'],
   ['/settings', 'Settings'],
 ]
 

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode, useEffect } from 'react'
 import { ArrowDownRight, ArrowLeftRight, ArrowUpRight, Minus } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useConverter, useStore } from '../store'
@@ -144,6 +144,11 @@ function Metric({ label, a, b, invert, format, unit, sub }: { label: string; a: 
 /* ---------------- page ---------------- */
 
 export function Compare() {
+  // Insight badges count the analysis you actually open.
+  useEffect(() => {
+    useStore.getState().bumpStat('compares')
+  }, [])
+
   const { transactions, categories, accounts, settings } = useStore()
   const conv = useConverter()
   const money = useMoney()

@@ -1,5 +1,5 @@
 // Spotify-Wrapped style summary of a calendar year.
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
 import { useConverter, useStore } from '../store'
@@ -8,6 +8,11 @@ import { fmtDate, today } from '../lib/utils'
 import { Card, ChartTooltip, Empty, Money, Segmented, axisProps, useMoney } from '../components/ui'
 
 export function YearInReview() {
+  // Insight badges count the analysis you actually open.
+  useEffect(() => {
+    useStore.getState().bumpStat('yearReviewViews')
+  }, [])
+
   const { transactions, accounts, categories } = useStore()
   const conv = useConverter()
   const money = useMoney()

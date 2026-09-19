@@ -21,6 +21,9 @@ const MORE = [
   { to: '/import', label: 'Import' },
   { to: '/reports', label: 'Reports' },
   { to: '/health', label: 'Data health' },
+  { to: '/progress', label: 'Progress' },
+  { to: '/weekly', label: 'Weekly review' },
+  { to: '/help', label: 'Help centre' },
   { to: '/settings', label: 'Settings' },
 ]
 
