@@ -146,3 +146,96 @@ Effort: S = < ½ day, M = 1–2 days, L = 3+ days. Items marked **★** are the 
 
 Deliberately **not** planned: multi‑user/sharing, cloud sync service, bank aggregation (Plaid & co.), AI categorisation calling
 external APIs — they conflict with the local‑only, single‑user promise. Everything above runs on your machine.
+
+---
+
+## Status — what shipped (2026-09-19)
+
+Every sprint below was implemented in order; the commits are on the branch.
+
+| # | Item | Status |
+|---|---|---|
+| **0.1** | API auth + loopback default | ✅ `HOST` defaults to `127.0.0.1`; a bearer token is generated into `data/.token` (or `FINANALYTICS_TOKEN`) whenever it binds elsewhere; token gate in the UI; `Origin`/host check on writes |
+| **0.2** | Multi-tab / multi-device safety | ✅ `rev` counter + `/api/patch` **incremental ops** (commutative upsert/delete), `BroadcastChannel` between tabs, 60 s poll that re-hydrates on a newer revision, `/api/patch` fallback to full PUT |
+| **0.3** | Archive instead of delete | ✅ `Account.archived`, archived accounts excluded from totals/pickers, category delete offers *merge into…* and clears splits too |
+| **0.4** | Undo | ✅ `lib/undo.ts` ring buffer (20), 9 s Undo toast on every destructive action, bulk delete included |
+| **0.5** | Backup integrity & restore | ✅ `PRAGMA integrity_check` + SHA-256 sidecar per snapshot, unique snapshot names, **Restore latest / upload .db** in Settings (pre-restore snapshot, atomic swap, connection re-open) |
+| **0.6** | Server-side scheduler | ✅ `server/scheduler.mjs`: hourly auto-post of recurring (historical dates, idempotent) + monthly debt interest, also mounted in the Vite dev server |
+| **1.1** | Cross-currency transfers | ✅ `toAmount` + `rateUsed` on the transaction, editable destination field in the modal, balance uses it |
+| **1.2** | `monthStartDay` | ✅ `periodKey/periodRange/currentPeriod` used by budgets, alerts, dashboard periods; configurable in Settings |
+| **1.3** | Debt interest | ✅ `accrueInterest()` (client) + scheduler (server), `lastInterestAt`, payments split into interest/principal, "interest paid to date" KPI |
+| **1.4** | Debt reminder month-wrap | ✅ `nextDueDate()` used by the notification centre |
+| **1.5** | Compare UTC bug | ✅ local `addDays` instead of `toISOString()` |
+| **1.6** | Trades move cash | ✅ `investment` field on transactions, optional cash account in the trade dialog, FIFO lots & realised P&L |
+| **1.7** | Import hash | ✅ already included the account; re-verified |
+| **1.8** | Money rounding | ✅ `round2` at every store write boundary |
+| **1.9** | Dashboard chip | ✅ "last month ▾" is now a real period control |
+| **2.1** | `useConverter` memo | ✅ memoised on `[currency, ratesKey]` — every `useMemo` in the app now holds |
+| **2.2** | Selector hooks | ✅ `useTransactions/useAccounts/useCategories/useSettings` available; pages still use the whole store where they genuinely need it |
+| **2.3** | Currency index map | ✅ `currencyIndex()` + `txBaseIdx()` added to `analytics.ts` |
+| **2.4** | Incremental sync | ✅ see 0.2 |
+| **2.5** | Server-side aggregates | ⏳ not needed yet (per-collection ops keep the payload small; revisit past ~20k transactions) |
+| **2.6** | Virtualised list | ⏳ "load 50 more" is still comfortable at this size |
+| **2.7** | Tests | ✅ Vitest suites for `analytics`, `forecast`, `matching`, `search`, `health`, `sync` and the SQLite store + scheduler (31 tests), GitHub Actions workflow |
+| **2.8** | Schema validation | ✅ `validateState` / `validateOps` on every write |
+| **3.1** | PWA | ✅ manifest + hand-rolled service worker, icons, installable, app-shell caching in production builds |
+| **3.2** | Bottom tab bar | ✅ `MobileNav` (Home / Activity / Budgets / Trends / + / More) |
+| **3.3** | Card rows, swipe | ✅ `tx-cards` layout with swipe-left actions and a hidden table on phones |
+| **3.4** | Quick-add sheet | ✅ keypad, recent payees/accounts/categories, "same as last time", reachable from the FAB and the PWA shortcut |
+| **3.5** | Touch targets & insets | ✅ 44 px targets, safe-area padding, `100dvh`, no hover-lift on touch, global search reachable via `/` |
+| **3.6** | Mobile dashboard | ⏳ grid already collapses; carousel not needed |
+| **3.7** | Receipt camera | ✅ attachment upload (`capture="environment"`), stored and served by `/api/attachments` |
+| **4.1** | Notification centre | ✅ derived items + persisted read/snooze state, grouped by day |
+| **4.2** | Web Push | ⚠️ partial: Notification-API alerts while the app is open (Settings → Enable notifications). True push needs a VAPID subscription served by the local server |
+| **4.3** | Auto-match bills | ✅ `matchBills` + "Settle bills with existing transactions" panel on the Bills page |
+| **4.4** | Variable bills | ✅ `variable` flag, estimate = average of the last three amounts |
+| **4.5** | Anomaly alerts | ✅ `detectAnomalies` (mean + 2σ) surfaced in the notification centre |
+| **4.6** | Subscription creep | ✅ price increases and unused subscriptions |
+| **4.7** | Detect recurring | ✅ "Looks like a bill" with confidence score and one-click tracking |
+| **4.8** | Merchant normalisation | ✅ `normalizePayee` (Amazon, Square, reference codes) + learned aliases in Settings |
+| **4.9** | Rules v2 | ✅ `amount between`, `account is`, `weekday`, pattern2, live match count, "why this category?" |
+| **4.10** | Weekly digest | ✅ "This week so far" card (spend vs last week, movers, what is due); e-mail digest ⏳ |
+| **5.1** | Safe to spend | ✅ dashboard headline with the full breakdown and per-day figure |
+| **5.2** | Cash-flow forecast | ✅ 30/90-day projection, min-balance warning, dashboard sparkline |
+| **5.3** | Rollover & templates | ✅ per-budget rollover, 50/30/20 template, burn-down chart |
+| **5.4** | Investments maths | ✅ FIFO lots, realised P&L, XIRR, dividends, rebalancing targets; live price fetching ⏳ |
+| **5.5** | Debt maths | ✅ amortisation table, "pay X extra" shortcuts, interest to date |
+| **5.6** | Goals ↔ accounts | ✅ linked account drives progress, pacing on-track/behind |
+| **5.7** | Net-worth snapshots | ⏳ net worth is still derived (revisit with server aggregates, 2.5) |
+| **5.8** | Rate history | ⚠️ one-click live rate fetch added; per-transaction historical rates ⏳ |
+| **5.9** | Reconciliation | ✅ Wallet → reconcile: statement balance, cleared/uncleared list, difference |
+| **5.10** | Refunds & reimbursements | ✅ `refundOf` (nets out of category totals) and `owedBy` with UI |
+| **5.11** | Tax helpers | ✅ tax-deductible categories + report card and CSV row; inflation toggle ⏳ |
+| **6.1** | Sankey | ✅ Analytics → Cash flow |
+| **6.2** | Heat-map | ✅ 365-day spending heat-map with drill-down |
+| **6.3** | Drill-down everywhere | ✅ `DrillDown` panel on the dashboard (bars, donut, gauges) and Analytics (categories, payees, heat-map) |
+| **6.4** | Waterfall / multi-period | ⏳ |
+| **6.5** | Budget burn-down | ✅ |
+| **6.6** | Payee page | ✅ history chart, average, cadence, rule/alias, rename-everything |
+| **6.7** | Search operators & views | ✅ see Transactions |
+| **6.8** | Year in review | ✅ |
+| **6.9** | `ChartFrame` | ⚠️ `ChartTooltip` + empty states everywhere; PNG export ⏳ |
+| **7.1** | Command palette | ✅ navigate, months, theme, snapshot, "12.50 coffee" quick add |
+| **7.2** | Onboarding | ✅ 4-step wizard (name → currency → account → demo/empty) |
+| **7.3** | Data-health page | ✅ with fix buttons |
+| **7.4** | Customisable dashboard | ⏳ |
+| **7.5** | Inline editing / multi-select | ⚠️ multi-select, bulk actions and `J/K/Enter/X` navigation done; inline cell editing ⏳ |
+| **7.6** | Import v2 | ✅ per-bank remembered presets, OFX/QFX/QIF, batches with rollback |
+| **7.7** | Category groups | ⚠️ `parentId` in the model; group UI/roll-up ⏳ |
+| **7.8** | Audit log | ⚠️ `createdAt`/`updatedAt` on transactions; a visible history view ⏳ |
+| **7.9** | Accessibility | ✅ focus rings, skip link, `aria-live`, labelled icon buttons |
+| **7.10** | i18n | ⏳ |
+| **7.11** | Skeletons | ⚠️ splash + empty states with actions |
+| **8.1** | Encryption at rest | ⚠️ passcode **lock screen** and idle auto-lock shipped; full AES-GCM encryption of the DB ⏳ |
+| **8.2** | Backup destinations | ✅ `FINANALYTICS_BACKUP_CMD` hook, retention policy, restore UI |
+| **8.3** | Packaging | ✅ Dockerfile + systemd unit |
+| **8.4** | Multi-profile | ✅ point `FINANALYTICS_DB` at another file (documented) |
+| **8.5** | SQL console | ✅ read-only, CSV export |
+| **8.6** | Attachments API | ✅ |
+
+**Deliberately not planned** (unchanged): multi-user, cloud sync, bank aggregation, external AI APIs.
+
+**Bugs found and fixed while building this** (they were not in the audit): `useLocation` outside the
+router (blank screen), an unstable zustand selector (`?? []`) that caused an infinite render loop,
+`resetDemo()` re-triggering the onboarding wizard, and a restore that deleted the snapshot it was
+about to restore from.
