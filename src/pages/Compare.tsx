@@ -18,7 +18,7 @@ import {
   yearAgoPeriod,
   yearPeriod,
 } from '../lib/compare'
-import { fmtCompact, lastNMonths, monthKey, monthLabel, today } from '../lib/utils'
+import { addDays, fmtCompact, lastNMonths, monthKey, monthLabel, today } from '../lib/utils'
 
 const A_COLOR = '#6270f2'
 const B_COLOR = '#e05be0'
@@ -171,9 +171,8 @@ export function Compare() {
     const len = Math.max(sa.cumulative.length, sb.cumulative.length)
     const tA = today()
     return Array.from({ length: len }, (_, i) => {
-      const dateA = sa.cumulative[i] !== undefined ? new Date(a.from + 'T00:00:00') : null
-      if (dateA) dateA.setDate(dateA.getDate() + i)
-      const futureA = dateA ? dateA.toISOString().slice(0, 10) > tA : true
+      // Local-date arithmetic: toISOString() would shift the day in UTC+ zones.
+      const futureA = sa.cumulative[i] !== undefined ? addDays(a.from, i) > tA : true
       return { day: i + 1, a: futureA ? null : (sa.cumulative[i] ?? null), b: sb.cumulative[i] ?? null }
     })
   }, [sa, sb, a.from])

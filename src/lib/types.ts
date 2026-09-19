@@ -208,6 +208,18 @@ export interface SavedView {
   tag: string
 }
 
+/** A dismissed/snoozed entry in the persistent notification centre. */
+export interface NotificationRecord {
+  id: string
+  kind: 'bill' | 'budget' | 'debt' | 'goal' | 'anomaly' | 'subscription' | 'forecast'
+  ref: string // stable id of the thing it is about (recurring id, budget id…)
+  title: string
+  body: string
+  createdAt: string
+  read: boolean
+  snoozedUntil: string | null
+}
+
 export interface Settings {
   name: string
   currency: string // base currency
@@ -225,6 +237,7 @@ export interface Settings {
   autoLockMinutes?: number
   aliases?: Alias[]
   savedViews?: SavedView[]
+  notifications?: NotificationRecord[]
 }
 
 export interface AppData {

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeftRight,
   BarChart3,
   Bell,
   CalendarClock,
+  Command,
   FileText,
   GitCompareArrows,
+  HeartPulse,
   Landmark,
   LayoutDashboard,
   LineChart,
@@ -16,17 +18,23 @@ import {
   Plus,
   Search,
   Settings,
+  Sparkles,
   Sun,
   Target,
   Upload,
   Wallet,
 } from 'lucide-react'
 import { useStore, applyTheme, useConverter } from '../store'
-import { initials, monthKey, today } from '../lib/utils'
+import { currentPeriod, initials, today } from '../lib/utils'
 import { TransactionModal } from './TransactionModal'
 import { budgetProgress, upcoming } from '../lib/analytics'
-import { NotificationsPanel } from './Notifications'
+import { NotificationBadge, NotificationsPanel } from './Notifications'
 import { useSync } from '../lib/sync'
+import { CommandPalette } from './CommandPalette'
+import { QuickAdd } from './QuickAdd'
+import { UndoToasts } from './Toasts'
+import { TokenGate } from './TokenGate'
+import { MobileNav } from './MobileNav'
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -39,8 +47,10 @@ const nav = [
   { to: '/goals', label: 'Goals', icon: Target },
   { to: '/investments', label: 'Investments', icon: LineChart },
   { to: '/debts', label: 'Debts', icon: Landmark },
+  { to: '/review', label: 'Year in review', icon: Sparkles },
   { to: '/import', label: 'Import', icon: Upload },
   { to: '/reports', label: 'Reports', icon: FileText },
+  { to: '/health', label: 'Data health', icon: HeartPulse },
 ]
 
 const titles: Record<string, [string, string]> = {
@@ -49,51 +59,53 @@ const titles: Record<string, [string, string]> = {
   '/compare': ['Compare periods', 'Put two months, quarters, years or custom ranges side by side'],
   '/transactions': ['Transactions', 'Every movement, searchable'],
   '/recurring': ['Bills & recurring', 'Subscriptions, salary and scheduled payments'],
-  '/budgets': ['Budgets', 'Monthly limits per category'],
+  '/budgets': ['Budgets', 'Limits per category, with rollover'],
   '/goals': ['Goals', 'What you are saving towards'],
   '/investments': ['Investments', 'Portfolio, allocation and P&L'],
   '/debts': ['Debts', 'Loans, cards and payoff plans'],
   '/import': ['Import', 'Bank statements and categorisation rules'],
   '/reports': ['Reports', 'Monthly summaries you can print'],
+  '/review': ['Year in review', 'Your money story, one year at a time'],
+  '/health': ['Data health', 'Everything that quietly skews your numbers'],
   '/settings': ['Settings', 'Profile, currencies and data'],
 }
 
 export function Layout({ children, search, onSearch }: { children: ReactNode; search: string; onSearch: (s: string) => void }) {
-  const { settings, updateSettings, budgets, transactions, categories, accounts, recurring, runAutoPost } = useStore()
+  const { settings, updateSettings, budgets, transactions, categories, accounts, recurring, runAutoPost, accrueInterest } = useStore()
   const conv = useConverter()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  const [showQuick, setShowQuick] = useState(false)
   const [showNotif, setShowNotif] = useState(false)
-  const [posted, setPosted] = useState<number | null>(null)
+  const [palette, setPalette] = useState(false)
   const loc = useLocation()
   const [title, sub] = titles[loc.pathname] ?? ['Finanalytics', '']
 
   useEffect(() => applyTheme(settings.theme), [settings.theme])
 
-  // Auto-post due recurring transactions once per day
+  // Auto-post due recurring transactions and accrue debt interest (idempotent, per day).
   useEffect(() => {
-    if (settings.lastRecurringRun !== today() || recurring.some((r) => r.active && r.autoPost && r.nextDate <= today())) {
-      const n = runAutoPost()
-      if (n > 0) {
-        setPosted(n)
-        setTimeout(() => setPosted(null), 4000)
-      }
-    }
+    if (settings.lastRecurringRun !== today() || recurring.some((r) => r.active && r.autoPost && r.nextDate <= today())) runAutoPost()
+    accrueInterest()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPalette(true)
+      }
+      if (e.key === '/' && !typing) {
         e.preventDefault()
         document.getElementById('global-search')?.focus()
       }
-      if (e.key.toLowerCase() === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        const tag = (e.target as HTMLElement)?.tagName
-        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
-          e.preventDefault()
-          setShowAdd(true)
-        }
+      if (e.key.toLowerCase() === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !typing) {
+        e.preventDefault()
+        setShowAdd(true)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -101,10 +113,10 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
   }, [])
 
   const alerts = useMemo(() => {
-    const over = budgetProgress(budgets, transactions, categories, accounts, conv, monthKey(today())).filter((b) => b.pct >= 90).length
+    const over = budgetProgress(budgets, transactions, categories, accounts, conv, currentPeriod(settings.monthStartDay), settings.monthStartDay).filter((b) => b.pct >= 90).length
     const due = upcoming(recurring, 7).filter((u) => !u.rec.autoPost || u.daysAway < 0).length
     return over + due
-  }, [budgets, transactions, categories, accounts, recurring, conv])
+  }, [budgets, transactions, categories, accounts, recurring, conv, settings.monthStartDay])
 
   const sync = useSync()
   const syncLabel =
@@ -136,6 +148,11 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
             <small>PERSONAL FINANCE</small>
           </div>
         </div>
+        <button className="nav-link palette-entry" onClick={() => setPalette(true)}>
+          <Search size={17} />
+          Search & commands
+          <span className="kbd-inline">⌘K</span>
+        </button>
         {nav.map((n, i) => (
           <NavLink
             key={n.to}
@@ -188,13 +205,16 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
             </div>
           </div>
           <div className="topbar-right">
+            <button className="icon-btn palette-btn" onClick={() => setPalette(true)} aria-label="Search and commands" title="Search & commands (⌘K)">
+              <Command size={16} />
+            </button>
             <label className="search">
               <input id="global-search" placeholder="Search…" value={search} onChange={(e) => onSearch(e.target.value)} />
               <Search size={15} />
             </label>
             <button className="icon-btn" onClick={() => setShowNotif(true)} aria-label="Notifications">
               <Bell size={16} />
-              {alerts > 0 && <span className="dot" />}
+              <NotificationBadge />
             </button>
             <NavLink to="/settings" className="user-chip">
               <div className="avatar">{initials(settings.name)}</div>
@@ -209,9 +229,18 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
         </div>
       </main>
 
+      <button className="mobile-fab" onClick={() => setShowQuick(true)} aria-label="Quick add">
+        <Plus size={22} />
+      </button>
+      <MobileNav onQuickAdd={() => setShowQuick(true)} />
+
       {showAdd && <TransactionModal onClose={() => setShowAdd(false)} />}
+      {showQuick && <QuickAdd onClose={() => setShowQuick(false)} />}
       {showNotif && <NotificationsPanel onClose={() => setShowNotif(false)} />}
-      {posted !== null && <div className="toast">Auto-posted {posted} recurring transaction{posted === 1 ? '' : 's'}</div>}
+      {palette && <CommandPalette onClose={() => setPalette(false)} />}
+      <UndoToasts />
+      <TokenGate />
+      <button className="hidden-shortcut" onClick={() => navigate('/transactions')} aria-hidden tabIndex={-1} />
     </div>
   )
 }

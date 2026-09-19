@@ -1,0 +1,19 @@
+{
+  "name": "Finanalytics — Personal finance",
+  "short_name": "Finanalytics",
+  "description": "Local-first personal finance dashboard: accounts, budgets, bills, investments and debts.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0c11",
+  "theme_color": "#0b0c11",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Add expense", "short_name": "Add", "url": "./index.html#/transactions?quick=1", "description": "Open the quick-add sheet" }
+  ]
+}

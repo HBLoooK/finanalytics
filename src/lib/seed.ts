@@ -323,7 +323,7 @@ export function demoData(): AppData {
     debts: defaultDebts(),
     debtPayments: defaultDebtPayments(),
     rules: structuredClone(defaultRules),
-    settings: { ...structuredClone(defaultSettings), lastRecurringRun: today() },
+    settings: { ...structuredClone(defaultSettings), lastRecurringRun: today(), onboarded: false },
   }
 }
 
@@ -340,6 +340,6 @@ export function emptyData(): AppData {
     debts: [],
     debtPayments: [],
     rules: structuredClone(defaultRules),
-    settings: { ...structuredClone(defaultSettings), name: 'You', lastRecurringRun: today() },
+    settings: { ...structuredClone(defaultSettings), name: 'You', lastRecurringRun: today(), onboarded: false },
   }
 }
