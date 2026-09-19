@@ -1,6 +1,31 @@
 # Finanalytics
 
-A personal finance dashboard for **single-user, local use**. The look closely follows
+![CI](https://github.com/HBLoooK/finanalytics/actions/workflows/ci.yml/badge.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D22.5-3ec97a)
+![Version](https://img.shields.io/badge/version-1.1.0-6270f2)
+![Data](https://img.shields.io/badge/data-local%20SQLite-f2cf3a)
+![Stack](https://img.shields.io/badge/stack-React%2019%20%C2%B7%20TS%20%C2%B7%20Vite%20%C2%B7%20Node-e05be0)
+
+A **local-first personal finance dashboard**: one user, no accounts, no tracking, and a SQLite file
+on your own machine as the single source of truth. It covers the whole loop — capture, categorise,
+budget, invest, borrow, import, analyse — then explains every number it shows and nudges you once a
+day towards the one thing worth doing.
+
+## Contents
+
+- [Features](#features)
+- [Running it](#running-it)
+- [Getting started](#getting-started)
+- [Environment](#environment)
+- [Storage, safety & backups](#storage-safety--backups)
+- [Mobile & installability](#mobile--installability)
+- [Running it as a service](#running-it-as-a-service)
+- [Tests](#tests)
+- [Tech](#tech)
+- [Project layout](#project-layout)
+- [Roadmap](#roadmap)
+
+The look closely follows
 [this Behance concept](https://www.behance.net/gallery/178183953/Dashboard-Finance-uiux-dashbord):
 near-black background, dark cards, indigo / magenta / yellow / green / orange accents, pill navigation,
 thin ring gauges and a dark bank card.
@@ -36,9 +61,21 @@ allocation, Income & expenses weekly wave.
 | **Multi-currency** | Base currency + manual rates (optional **one-click fetch**), per-account balances stay native, rate used is stored per transaction |
 | **Settings** | Name, base currency, number format, theme, **month start day**, week start, categories (incl. tax-deductible), aliases, saved views, **merchant aliases**, exchange rates, **desktop notifications**, **passcode lock**, **SQL console** (read-only), **snapshot / restore / upload .db**, JSON backup, demo reset |
 | **Notifications** | Overdue & upcoming bills, budgets near limit, debts (with correct month-wrap), goals, **anomalies**, **subscription creep**, **negative-balance forecast** — with read/unread and snooze |
+| **Progress** | **XP, levels & titles** for the habits that make the numbers correct (never for spending less), **streaks with earned grace tokens**, **47 badges** in three tiers, **quests** generated from your own averages, **seasons** against your past months, **celebrations** that respect reduced motion — all behind **one master switch** |
+| **Coach** | **One contextual nudge a day** built from your data (uncategorised, bills due, safe-to-spend pace, budget breaches, detected recurring, anomalies, debt maths, goals, streaks, savings rate), **quiet hours**, **sticky dismissal**, never a modal |
+| **Help** | A **`?`** beside every KPI, chart and setting with a **"Show the maths"** expander, **"About this page"** panels on all 18 routes, a searchable **help centre** with recipes and shortcuts, and skippable **guided tours** |
 
 Keyboard: `N` new transaction · `⌘K` / `Ctrl K` command palette (also `12.50 coffee`) · `/` search ·
-`J` / `K` move · `Enter` edit · `X` select · `Esc` close.
+`?` help centre · `J` / `K` move · `Enter` edit · `X` select · `Esc` close.
+
+## Running it
+
+| Mode | Command | Notes |
+|---|---|---|
+| **Development** | `npm run dev` | Vite dev server + SQLite API + scheduler in one process, `http://localhost:5173` |
+| **Production** | `npm run build && npm start` | Serves `dist/` plus the database API on `http://localhost:8787` |
+| **Docker** | `docker build -t finanalytics . && docker run -p 8787:8787 -v $PWD/data:/app/data finanalytics` | Mount `./data` so the database survives the container |
+| **systemd** | `sudo systemctl enable --now finanalytics` | Copy `finanalytics.service`, adjust the paths, enable |
 
 ## Getting started
 
@@ -57,6 +94,8 @@ npm start          # http://localhost:8787  serves dist/ + the database API
 ```
 
 The first run shows a short wizard (name → currency → first account → demo or empty data).
+
+## Environment
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -108,7 +147,7 @@ or with systemd — copy `finanalytics.service`, adjust the paths, then
 ## Tests
 
 ```bash
-npm test           # vitest: analytics/forecast/matching/search/health + SQLite store & scheduler
+npm test           # vitest: 62 tests — analytics, forecast, matching, search, health, gamification + SQLite store & scheduler
 npm run typecheck  # tsc -b
 npm run lint       # oxlint
 ```
@@ -122,13 +161,17 @@ React 19 · TypeScript · Vite · Zustand (persisted) · Recharts · react-route
 ```
 src/
   components/   Layout, MobileNav, CommandPalette, QuickAdd, DrillDown, PayeeDetails,
-                WeekDigest, Notifications, LockScreen, TokenGate, Toasts, TransactionModal, ui
+                WeekDigest, Notifications, LockScreen, TokenGate, Toasts, TransactionModal, ui,
+                XPBar, Celebration, CoachCard, DailyCheckIn, InfoTip, Tour
   lib/          types, analytics, compare, forecast, matching, search, health, year, rules,
-                csv (+OFX/QIF), seed/demo data, migrate, sync, undo, lock, notifications, utils
+                csv (+OFX/QIF), seed/demo data, migrate, sync, undo, lock, notifications, utils,
+                gamification (XP/streaks/quests/seasons), badges (47 rules), coach, help,
+                celebrate, tours
   pages/        Dashboard, Wallet, Transactions, Recurring, Budgets, Goals, Investments,
                 Debts, Import (+Rules+history), Reports, Analytics, Compare,
-                DataHealth, YearInReview, Settings
-  store.ts      Zustand store (persist middleware, incremental sync, undo, migrations)
+                DataHealth, YearInReview, Settings, Progress, WeeklyReview, Help
+  store.ts      Zustand store (persist middleware, incremental sync, undo, migrations,
+                progression actions: recordEvent, check-in, review, quests, badges, coach)
 server/
   db.mjs        SQLite schema, atomic writes, incremental ops, verified snapshots, restore
   api.mjs       /api/data · /api/patch · /api/status · /api/backup[/download] · /api/restore[/upload]
@@ -137,3 +180,9 @@ server/
   index.mjs     production server: static dist/ + API + scheduler
 data/           your database, backups and attachments (git-ignored)
 ```
+
+## Roadmap
+
+[ROADMAP.md](ROADMAP.md) is the full improvement plan with a per-item status table; the design behind
+the progression system and the in-app explanations lives in [GAMIFICATION.md](GAMIFICATION.md).
+User-facing changes are summarised in [CHANGELOG.md](CHANGELOG.md).
