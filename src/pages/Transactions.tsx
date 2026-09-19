@@ -1,17 +1,20 @@
 import { useMemo, useState } from 'react'
-import { Download, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Download, Pencil, Plus, Search, Star, Trash2, X } from 'lucide-react'
 import { useConverter, useStore } from '../store'
 import type { Transaction, TxType } from '../lib/types'
 import { csvEscape, downloadFile, fmtDateLong, groupBy, lastNMonths, monthLabel, sum, today, monthKey } from '../lib/utils'
 import { txBase } from '../lib/analytics'
 import { Card, Empty, Money, confirmDelete } from '../components/ui'
 import { TransactionModal } from '../components/TransactionModal'
+import { OPERATOR_HELP, matchQuery, parseQuery } from '../lib/search'
+import { useToast } from '../components/Toasts'
 
 const PAGE = 50
 
 export function Transactions({ search }: { search: string }) {
-  const { transactions, categories, accounts, deleteTransaction, deleteTransactions, updateTransaction, settings } = useStore()
+  const { transactions, categories, accounts, deleteTransaction, deleteTransactions, updateTransaction, settings, addSavedView } = useStore()
   const conv = useConverter()
+  const toast = useToast()
   const [type, setType] = useState<'all' | TxType>('all')
   const [cat, setCat] = useState('all')
   const [acc, setAcc] = useState('all')
@@ -20,6 +23,8 @@ export function Transactions({ search }: { search: string }) {
   const [editing, setEditing] = useState<Transaction | null | 'new'>(null)
   const [limit, setLimit] = useState(PAGE)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [showHelp, setShowHelp] = useState(false)
+  const [viewName, setViewName] = useState('')
 
   const months = useMemo(() => {
     const keys = new Set(transactions.map((t) => monthKey(t.date)))
@@ -27,32 +32,28 @@ export function Transactions({ search }: { search: string }) {
     return [...keys].sort().reverse()
   }, [transactions])
   const allTags = useMemo(() => [...new Set(transactions.flatMap((t) => t.tags ?? []))].sort(), [transactions])
+  const q = useMemo(() => parseQuery(search), [search])
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
     return transactions
       .filter((t) => type === 'all' || t.type === type)
       .filter((t) => cat === 'all' || t.categoryId === cat || t.splits?.some((s) => s.categoryId === cat))
       .filter((t) => acc === 'all' || t.accountId === acc || t.toAccountId === acc)
       .filter((t) => month === 'all' || monthKey(t.date) === month)
       .filter((t) => tag === 'all' || t.tags?.includes(tag))
-      .filter((t) => {
-        if (!q) return true
-        if (q.startsWith('#')) return t.tags?.some((x) => x.includes(q.slice(1))) ?? false
-        const c = categories.find((x) => x.id === t.categoryId)
-        return t.payee.toLowerCase().includes(q) || t.note.toLowerCase().includes(q) || (c?.name.toLowerCase().includes(q) ?? false) || String(t.amount).includes(q) || (t.tags?.some((x) => x.includes(q)) ?? false)
-      })
+      .filter((t) => matchQuery(t, q, categories, accounts))
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-  }, [transactions, type, cat, acc, month, tag, search, categories])
+  }, [transactions, type, cat, acc, month, tag, q, categories, accounts])
 
   const shown = filtered.slice(0, limit)
   const groups = groupBy(shown, (t) => t.date)
   const income = sum(filtered.filter((t) => t.type === 'income').map((t) => txBase(t, accounts, conv)))
   const expense = sum(filtered.filter((t) => t.type === 'expense').map((t) => txBase(t, accounts, conv)))
+  const savedViews = settings.savedViews ?? []
 
   const exportCsv = () => {
     const rows = [
-      ['date', 'type', 'payee', 'category', 'account', 'to_account', 'amount', 'currency', 'tags', 'note'],
+      ['date', 'type', 'payee', 'category', 'account', 'to_account', 'amount', 'currency', 'status', 'tags', 'note'],
       ...filtered.map((t) => [
         t.date,
         t.type,
@@ -62,6 +63,7 @@ export function Transactions({ search }: { search: string }) {
         accounts.find((a) => a.id === t.toAccountId)?.name ?? '',
         t.type === 'expense' ? -t.amount : t.amount,
         accounts.find((a) => a.id === t.accountId)?.currency ?? '',
+        t.status ?? 'cleared',
         (t.tags ?? []).join(' '),
         t.note,
       ]),
@@ -79,6 +81,11 @@ export function Transactions({ search }: { search: string }) {
   const bulkCategory = (cid: string) => {
     for (const id of selected) updateTransaction(id, { categoryId: cid })
     setSelected(new Set())
+  }
+  const bulkStatus = (status: 'pending' | 'cleared') => {
+    for (const id of selected) updateTransaction(id, { status })
+    setSelected(new Set())
+    toast(`Marked ${selected.size} as ${status}`)
   }
 
   return (
@@ -108,11 +115,42 @@ export function Transactions({ search }: { search: string }) {
         </div>
       </div>
 
+      {savedViews.length > 0 && (
+        <div className="saved-views">
+          {savedViews.map((v) => (
+            <span key={v.id} className={`saved-view`}>
+              <button
+                style={{ border: 0, background: 'none', color: 'inherit', font: 'inherit', cursor: 'pointer', padding: 0 }}
+                onClick={() => {
+                  window.location.hash = `#/transactions?q=${encodeURIComponent(v.query)}`
+                  window.location.reload()
+                }}
+              >
+                <Star size={12} /> {v.name}
+              </button>
+              <button
+                className="x"
+                aria-label="Delete view"
+                onClick={() => {
+                  const rest = savedViews.filter((x) => x.id !== v.id)
+                  useStore.getState().updateSettings({ savedViews: rest })
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <Card
         title={`${filtered.length} transaction${filtered.length === 1 ? '' : 's'}`}
-        sub={search ? `Matching “${search}”` : 'Tip: search “#tag” to filter by tag'}
+        sub={search ? `Matching “${search}”` : 'Search with operators: >100, cat:food, before:2026-03, is:uncategorised'}
         action={
           <div className="flex">
+            <button className="btn sm" onClick={() => setShowHelp((v) => !v)} title="Search operators">
+              <Search size={13} /> Operators
+            </button>
             <button className="btn sm" onClick={exportCsv} disabled={!filtered.length}>
               <Download size={14} /> CSV
             </button>
@@ -122,6 +160,18 @@ export function Transactions({ search }: { search: string }) {
           </div>
         }
       >
+        {showHelp && (
+          <div className="subtle-panel" style={{ marginBottom: 12 }}>
+            <div className="operator-help">
+              {OPERATOR_HELP.map(([k, v]) => (
+                <div key={k}>
+                  <code>{k}</code> <span className="muted">— {v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="filters">
           <select className="select" value={month} onChange={(e) => setMonth(e.target.value)}>
             <option value="all">All time</option>
@@ -150,6 +200,7 @@ export function Transactions({ search }: { search: string }) {
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
+                {a.archived ? ' (archived)' : ''}
               </option>
             ))}
           </select>
@@ -173,14 +224,28 @@ export function Transactions({ search }: { search: string }) {
           >
             Reset
           </button>
+          <input
+            className="input"
+            style={{ width: 'auto', flex: 1, minWidth: 140 }}
+            placeholder="Save this filter as…"
+            value={viewName}
+            onChange={(e) => setViewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && viewName.trim()) {
+                addSavedView({ name: viewName.trim(), query: search, type, categoryId: cat, accountId: acc, month, tag })
+                setViewName('')
+                toast('View saved')
+              }
+            }}
+          />
         </div>
 
         {selected.size > 0 && (
-          <div className="subtle-panel flex between" style={{ marginBottom: 12 }}>
+          <div className="subtle-panel flex between wrap" style={{ marginBottom: 12, gap: 8 }}>
             <span style={{ fontSize: 13 }}>
               <b>{selected.size}</b> selected
             </span>
-            <div className="flex">
+            <div className="flex wrap" style={{ gap: 6 }}>
               <select className="select" style={{ width: 'auto', padding: '6px 10px' }} defaultValue="" onChange={(e) => e.target.value && bulkCategory(e.target.value)}>
                 <option value="" disabled>
                   Set category…
@@ -191,6 +256,12 @@ export function Transactions({ search }: { search: string }) {
                   </option>
                 ))}
               </select>
+              <button className="btn sm" onClick={() => bulkStatus('cleared')}>
+                Mark cleared
+              </button>
+              <button className="btn sm" onClick={() => bulkStatus('pending')}>
+                Mark pending
+              </button>
               <button
                 className="btn danger sm"
                 onClick={() => {
@@ -220,25 +291,48 @@ export function Transactions({ search }: { search: string }) {
             }
           />
         ) : (
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{ width: 30 }} />
-                  <th>Payee</th>
-                  <th>Category</th>
-                  <th>Account</th>
-                  <th>Tags / note</th>
-                  <th className="num">Amount</th>
-                  <th style={{ width: 80 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(groups).map(([date, rows]) => (
-                  <GroupRows key={date} date={date} rows={rows} selected={selected} onToggle={toggle} onEdit={setEditing} onDelete={(t) => confirmDelete(`“${t.payee}”`) && deleteTransaction(t.id)} locale={settings.locale} />
-                ))}
-              </tbody>
-            </table>
+          <>
+            <div className="table-wrap hide-table-on-mobile">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 30 }} />
+                    <th>Payee</th>
+                    <th>Category</th>
+                    <th>Account</th>
+                    <th>Tags / note</th>
+                    <th className="num">Amount</th>
+                    <th style={{ width: 80 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(groups).map(([date, rows]) => (
+                    <GroupRows
+                      key={date}
+                      date={date}
+                      rows={rows}
+                      selected={selected}
+                      onToggle={toggle}
+                      onEdit={setEditing}
+                      onDelete={(t) => confirmDelete(`“${t.payee}”`) && deleteTransaction(t.id)}
+                      locale={settings.locale}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="tx-cards">
+              {Object.entries(groups).map(([date, rows]) => (
+                <div key={date}>
+                  <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', margin: '8px 0 4px' }}>
+                    {fmtDateLong(date, settings.locale)}
+                  </div>
+                  {rows.map((t) => (
+                    <CardRow key={t.id} t={t} selected={selected.has(t.id)} onToggle={() => toggle(t.id)} onEdit={() => setEditing(t)} onDelete={() => confirmDelete(`“${t.payee}”`) && deleteTransaction(t.id)} />
+                  ))}
+                </div>
+              ))}
+            </div>
             {filtered.length > limit && (
               <div style={{ textAlign: 'center', padding: 14 }}>
                 <button className="btn" onClick={() => setLimit((l) => l + PAGE)}>
@@ -246,11 +340,59 @@ export function Transactions({ search }: { search: string }) {
                 </button>
               </div>
             )}
-          </div>
+          </>
         )}
       </Card>
 
       {editing && <TransactionModal initial={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
+    </div>
+  )
+}
+
+/** Phone layout: a swipeable card row instead of a table row. */
+function CardRow({ t, selected, onToggle, onEdit, onDelete }: { t: Transaction; selected: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
+  const { categories, accounts } = useStore()
+  const [swipe, setSwipe] = useState(false)
+  const startX = { current: 0 }
+  const c = categories.find((x) => x.id === t.categoryId)
+  const a = accounts.find((x) => x.id === t.accountId)
+  const isTransfer = t.type === 'transfer'
+  return (
+    <div
+      className={`tx-card ${swipe ? 'swiping' : ''}`}
+      style={{ borderColor: selected ? 'var(--primary)' : undefined }}
+      onTouchStart={(e) => (startX.current = e.touches[0]!.clientX)}
+      onTouchEnd={(e) => {
+        const dx = e.changedTouches[0]!.clientX - startX.current
+        if (dx < -50) setSwipe(true)
+        else if (dx > 50) setSwipe(false)
+        else onToggle()
+      }}
+    >
+      <span className="tx-icon" style={{ width: 34, height: 34, fontSize: 14 }}>
+        {isTransfer ? '⇄' : (c?.icon ?? '•')}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 13.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</div>
+        <div className="muted" style={{ fontSize: 11.5 }}>
+          {isTransfer ? 'Transfer' : (c?.name ?? 'Uncategorised')} · {a?.name ?? '—'}
+          {t.status === 'pending' && <span className="tag" style={{ marginLeft: 6 }}>pending</span>}
+          {t.refundOf && <span className="tag" style={{ marginLeft: 6 }}>refund</span>}
+        </div>
+      </div>
+      <div className={`tx-amount ${t.type === 'income' ? 'pos' : isTransfer ? 'transfer' : 'neg'}`}>
+        <Money value={t.type === 'expense' ? -t.amount : t.amount} currency={a?.currency} signed={!isTransfer} />
+      </div>
+      {swipe ? (
+        <div className="act">
+          <button className="mini-btn" onClick={onEdit} aria-label="Edit">
+            <Pencil size={14} />
+          </button>
+          <button className="mini-btn danger" onClick={onDelete} aria-label="Delete">
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -302,18 +444,35 @@ function GroupRows({
                 </span>
                 <div>
                   <div style={{ fontWeight: 600 }}>{t.payee}</div>
-                  {t.recurringId && (
-                    <div className="muted" style={{ fontSize: 10.5 }}>
-                      recurring
-                    </div>
-                  )}
+                  <div className="flex" style={{ gap: 5 }}>
+                    {t.recurringId && (
+                      <div className="muted" style={{ fontSize: 10.5 }}>
+                        recurring
+                      </div>
+                    )}
+                    {t.status === 'pending' && (
+                      <span className="tag" style={{ fontSize: 10 }}>
+                        pending
+                      </span>
+                    )}
+                    {t.refundOf && (
+                      <span className="tag" style={{ fontSize: 10 }}>
+                        refund
+                      </span>
+                    )}
+                    {t.owedBy && (
+                      <span className="tag" style={{ fontSize: 10 }}>
+                        owed by {t.owedBy}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </td>
             <td>
               {isTransfer ? (
                 <span className="pill" style={{ color: 'var(--primary-2)' }}>
-                  Transfer
+                  {t.investment ? `${t.investment.side === 'buy' ? 'Buy' : 'Sell'} ${t.investment.qty} @ ${t.investment.price}` : 'Transfer'}
                 </span>
               ) : t.splits?.length ? (
                 <span className="pill" title={t.splits.map((s) => `${categories.find((c) => c.id === s.categoryId)?.name}: ${s.amount}`).join(', ')}>
@@ -327,7 +486,7 @@ function GroupRows({
                 </span>
               )}
             </td>
-            <td className="muted">{isTransfer ? `${a?.name ?? '?'} → ${to?.name ?? '?'}` : (a?.name ?? '—')}</td>
+            <td className="muted">{isTransfer && !t.investment ? `${a?.name ?? '?'} → ${to?.name ?? '?'}` : (a?.name ?? '—')}</td>
             <td>
               <div className="flex wrap" style={{ gap: 4 }}>
                 {(t.tags ?? []).map((x) => (
