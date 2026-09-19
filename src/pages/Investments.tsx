@@ -1,28 +1,52 @@
 import { useMemo, useState } from 'react'
-import { ArrowDownRight, ArrowUpRight, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowDownRight, ArrowUpRight, Pencil, Plus, RefreshCw, Scale, Trash2 } from 'lucide-react'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { useConverter, useStore } from '../store'
 import type { AssetClass, Holding } from '../lib/types'
 import { CATEGORY_COLORS } from '../lib/seed'
-import { portfolio } from '../lib/analytics'
+import { portfolio, rebalancePlan, xirr } from '../lib/analytics'
 import { fmtNum, today } from '../lib/utils'
 import { Card, ChartTooltip, Empty, Modal, Money, confirmDelete, useMoney } from '../components/ui'
+import { useToast } from '../components/Toasts'
 
 const CLASSES: AssetClass[] = ['stocks', 'etf', 'crypto', 'bonds', 'cash', 'real_estate', 'other']
 const label = (c: string) => c.replace('_', ' ').replace(/^\w/, (m) => m.toUpperCase())
 
 export function Investments() {
-  const { holdings, settings, addHolding, updateHolding, deleteHolding, tradeHolding } = useStore()
+  const { holdings, settings, accounts, transactions, addHolding, updateHolding, deleteHolding, tradeHolding, addTransaction } = useStore()
   const conv = useConverter()
   const money = useMoney()
+  const toast = useToast()
   const pf = useMemo(() => portfolio(holdings, conv), [holdings, conv])
   const [editing, setEditing] = useState<Holding | 'new' | null>(null)
   const [trade, setTrade] = useState<Holding | null>(null)
+  const [dividend, setDividend] = useState<Holding | null>(null)
   const [priceEdit, setPriceEdit] = useState<string | null>(null)
   const [priceVal, setPriceVal] = useState('')
   const classColors = Object.fromEntries(CLASSES.map((c, i) => [c, CATEGORY_COLORS[i % CATEGORY_COLORS.length]!]))
   const best = pf.rows.slice().sort((a, b) => b.pnlPct - a.pnlPct)[0]
   const worst = pf.rows.slice().sort((a, b) => a.pnlPct - b.pnlPct)[0]
+
+  /** Money-weighted return across all holdings: buys out, sells in, current value in. */
+  const moneyWeighted = useMemo(() => {
+    const flows: { date: string; amount: number }[] = []
+    for (const h of holdings) {
+      const rate = settings.rates[h.currency] ?? 1
+      for (const lot of h.lots ?? []) flows.push({ date: lot.date, amount: -(lot.qty * lot.price) / rate })
+    }
+    for (const t of transactions)
+      if (t.investment) {
+        const acc = accounts.find((a) => a.id === t.accountId)?.currency ?? settings.currency
+        const rate = settings.rates[acc] ?? 1
+        if (t.investment.side === 'sell') flows.push({ date: t.date, amount: t.amount / rate })
+      }
+    const now = today()
+    if (pf.value > 0) flows.push({ date: now, amount: pf.value })
+    return flows.length >= 2 ? xirr(flows) : null
+  }, [holdings, transactions, pf.value, settings.rates, accounts])
+
+  const plan = useMemo(() => rebalancePlan(holdings, conv), [holdings, conv])
+  const hasTargets = holdings.some((h) => h.targetPct != null)
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -42,16 +66,42 @@ export function Investments() {
         <div>
           <div className="l">Unrealised P&L</div>
           <div className="v" style={{ color: pf.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-            <Money value={pf.pnl} signed /> <span style={{ fontSize: 12 }}>({pf.pnlPct >= 0 ? '+' : ''}{pf.pnlPct.toFixed(1)}%)</span>
+            <Money value={pf.pnl} signed />{' '}
+            <span style={{ fontSize: 12 }}>
+              ({pf.pnlPct >= 0 ? '+' : ''}
+              {pf.pnlPct.toFixed(1)}%)
+            </span>
+          </div>
+        </div>
+        <div>
+          <div className="l">Realised & dividends</div>
+          <div className="v" style={{ fontSize: 15 }}>
+            <Money value={pf.realized} signed /> <span className="muted" style={{ fontSize: 12 }}>realised</span> · <Money value={pf.dividends} />{' '}
+            <span className="muted" style={{ fontSize: 12 }}>div</span>
           </div>
         </div>
         {best && (
           <div>
             <div className="l">Best / worst</div>
             <div className="v" style={{ fontSize: 14 }}>
-              <span style={{ color: 'var(--green)' }}>{best.symbol} {best.pnlPct >= 0 ? '+' : ''}{best.pnlPct.toFixed(1)}%</span>
+              <span style={{ color: 'var(--green)' }}>
+                {best.symbol} {best.pnlPct >= 0 ? '+' : ''}
+                {best.pnlPct.toFixed(1)}%
+              </span>
               {' · '}
-              <span style={{ color: 'var(--red)' }}>{worst!.symbol} {worst!.pnlPct >= 0 ? '+' : ''}{worst!.pnlPct.toFixed(1)}%</span>
+              <span style={{ color: 'var(--red)' }}>
+                {worst!.symbol} {worst!.pnlPct >= 0 ? '+' : ''}
+                {worst!.pnlPct.toFixed(1)}%
+              </span>
+            </div>
+          </div>
+        )}
+        {moneyWeighted !== null && (
+          <div>
+            <div className="l">Money-weighted return</div>
+            <div className="v" style={{ color: moneyWeighted >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {moneyWeighted >= 0 ? '+' : ''}
+              {(moneyWeighted * 100).toFixed(1)}% <span className="muted" style={{ fontSize: 11 }}>p.a.</span>
             </div>
           </div>
         )}
@@ -102,9 +152,11 @@ export function Investments() {
           title="Holdings"
           sub="Prices are entered manually — click a price to update it"
           action={
-            <button className="btn primary sm" onClick={() => setEditing('new')}>
-              <Plus size={14} /> Add holding
-            </button>
+            <div className="flex">
+              <button className="btn sm" onClick={() => setEditing('new')}>
+                <Plus size={14} /> Add holding
+              </button>
+            </div>
           }
         >
           {pf.rows.length === 0 ? (
@@ -136,6 +188,7 @@ export function Investments() {
                             <div style={{ fontWeight: 600 }}>{h.symbol}</div>
                             <div className="muted" style={{ fontSize: 11 }}>
                               {h.name} · {label(h.assetClass)}
+                              {h.realizedPnl ? ` · realised ${money(h.realizedPnl, { currency: h.currency })}` : ''}
                             </div>
                           </div>
                         </div>
@@ -178,7 +231,11 @@ export function Investments() {
                       <td className="num" style={{ color: h.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                           {h.pnl >= 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                          {money(Math.abs(h.pnl))} <span style={{ fontSize: 11 }}>({h.pnlPct >= 0 ? '+' : ''}{h.pnlPct.toFixed(1)}%)</span>
+                          {money(Math.abs(h.pnl))}{' '}
+                          <span style={{ fontSize: 11 }}>
+                            ({h.pnlPct >= 0 ? '+' : ''}
+                            {h.pnlPct.toFixed(1)}%)
+                          </span>
                         </span>
                       </td>
                       <td className="num">
@@ -194,6 +251,9 @@ export function Investments() {
                           <button className="btn sm" onClick={() => setTrade(h)}>
                             Trade
                           </button>
+                          <button className="btn sm ghost" onClick={() => setDividend(h)} title="Record a dividend">
+                            Div
+                          </button>
                           <button className="mini-btn" onClick={() => setEditing(h)}>
                             <Pencil size={13} />
                           </button>
@@ -206,6 +266,58 @@ export function Investments() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </Card>
+
+        <Card className="col-12" title="Rebalancing" sub="Set a target percentage per holding to see what to buy or sell">
+          {pf.rows.length === 0 ? (
+            <Empty title="Nothing to rebalance" />
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Holding</th>
+                    <th className="num">Value</th>
+                    <th className="num">Current</th>
+                    <th style={{ width: 110 }}>Target %</th>
+                    <th className="num">Target value</th>
+                    <th className="num">Drift</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {plan.rows.map((r) => (
+                    <tr key={r.id}>
+                      <td style={{ fontWeight: 600 }}>{r.symbol}</td>
+                      <td className="num">{money(r.value, { maximumFractionDigits: 0 })}</td>
+                      <td className="num muted">{r.weight.toFixed(1)}%</td>
+                      <td>
+                        <input
+                          className="input"
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ width: 78, padding: '4px 8px', textAlign: 'right' }}
+                          value={r.target ?? ''}
+                          placeholder="—"
+                          onChange={(e) => updateHolding(r.id, { targetPct: e.target.value === '' ? null : Number(e.target.value) })}
+                        />
+                      </td>
+                      <td className="num">{r.target == null ? '—' : money(r.targetValue, { maximumFractionDigits: 0 })}</td>
+                      <td className="num" style={{ color: r.target == null ? undefined : Math.abs(r.drift) < plan.total * 0.01 ? 'var(--green)' : 'var(--orange)' }}>
+                        {r.target == null ? '—' : `${r.drift > 0 ? 'sell ' : 'buy '}${money(Math.abs(r.drift), { maximumFractionDigits: 0 })}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {hasTargets && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Scale size={13} /> Anything within 1% of its target is considered balanced.
+                </div>
+              )}
             </div>
           )}
         </Card>
@@ -226,9 +338,33 @@ export function Investments() {
         <TradeModal
           holding={trade}
           onClose={() => setTrade(null)}
-          onSave={(side, qty, price) => {
-            tradeHolding(trade.id, side, qty, price)
+          onSave={(side, qty, price, accountId) => {
+            tradeHolding(trade.id, side, qty, price, accountId)
             setTrade(null)
+          }}
+        />
+      )}
+      {dividend && (
+        <DividendModal
+          holding={dividend}
+          onClose={() => setDividend(null)}
+          onSave={(amount, accountId, date) => {
+            updateHolding(dividend.id, { dividends: (dividend.dividends ?? 0) + amount })
+            if (accountId)
+              addTransaction({
+                type: 'income',
+                amount,
+                date,
+                accountId,
+                toAccountId: null,
+                categoryId: 'c_investments',
+                payee: `${dividend.symbol} dividend`,
+                note: '',
+                tags: ['investing'],
+                status: 'cleared',
+              })
+            setDividend(null)
+            toast('Dividend recorded')
           }}
         />
       )}
@@ -254,7 +390,23 @@ function HoldingModal({ initial, onClose, onSave }: { initial: Holding | null; o
         onSubmit={(e) => {
           e.preventDefault()
           if (!symbol.trim() || !(Number(quantity) > 0)) return
-          onSave({ symbol: symbol.trim().toUpperCase(), name: name.trim() || symbol.trim().toUpperCase(), assetClass, quantity: Number(quantity), avgCost: Number(avgCost) || 0, price: Number(price) || Number(avgCost) || 0, currency, updatedAt: today(), color })
+          const qty = Number(quantity)
+          const cost = Number(avgCost) || 0
+          onSave({
+            symbol: symbol.trim().toUpperCase(),
+            name: name.trim() || symbol.trim().toUpperCase(),
+            assetClass,
+            quantity: qty,
+            avgCost: cost,
+            price: Number(price) || cost,
+            currency,
+            updatedAt: today(),
+            color,
+            lots: initial?.lots?.length ? initial.lots : qty > 0 && cost > 0 ? [{ date: today(), qty, price: cost }] : [],
+            targetPct: initial?.targetPct ?? null,
+            dividends: initial?.dividends ?? 0,
+            realizedPnl: initial?.realizedPnl ?? 0,
+          })
         }}
       >
         <div className="form-grid">
@@ -318,20 +470,25 @@ function HoldingModal({ initial, onClose, onSave }: { initial: Holding | null; o
   )
 }
 
-function TradeModal({ holding, onClose, onSave }: { holding: Holding; onClose: () => void; onSave: (side: 'buy' | 'sell', qty: number, price: number) => void }) {
+function TradeModal({ holding, onClose, onSave }: { holding: Holding; onClose: () => void; onSave: (side: 'buy' | 'sell', qty: number, price: number, accountId: string | null) => void }) {
+  const { accounts } = useStore()
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
   const [qty, setQty] = useState('')
   const [price, setPrice] = useState(String(holding.price))
+  const [accountId, setAccountId] = useState(
+    accounts.find((a) => !a.archived && (a.type === 'investment' || a.currency === holding.currency))?.id ?? accounts[0]?.id ?? '',
+  )
+  const [moveCash, setMoveCash] = useState(true)
   const money = useMoney()
   const total = (Number(qty) || 0) * (Number(price) || 0)
   return (
-    <Modal title={`Trade ${holding.symbol}`} onClose={onClose} width={420}>
+    <Modal title={`Trade ${holding.symbol}`} onClose={onClose} width={460}>
       <form
         className="stack"
         style={{ gap: 14 }}
         onSubmit={(e) => {
           e.preventDefault()
-          if (Number(qty) > 0 && Number(price) > 0) onSave(side, Number(qty), Number(price))
+          if (Number(qty) > 0 && Number(price) > 0) onSave(side, Number(qty), Number(price), moveCash ? accountId || null : null)
         }}
       >
         <div className="type-toggle" style={{ gridTemplateColumns: '1fr 1fr' }}>
@@ -351,9 +508,25 @@ function TradeModal({ holding, onClose, onSave }: { holding: Holding; onClose: (
             <label>Price ({holding.currency})</label>
             <input className="input" type="number" step="any" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
           </div>
+          <label className="check full">
+            <input type="checkbox" checked={moveCash} onChange={(e) => setMoveCash(e.target.checked)} />
+            Move the cash too (keeps balances and net worth correct)
+          </label>
+          {moveCash && (
+            <div className="field full">
+              <label>{side === 'buy' ? 'Pay from account' : 'Deposit into account'}</label>
+              <select className="select" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.currency})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         <div className="muted" style={{ fontSize: 12 }}>
-          Total {money(total, { currency: holding.currency })}. {side === 'buy' ? 'Average cost is recalculated.' : 'Average cost is kept.'} Record the cash side as a transfer to/from your brokerage account if you want balances to move too.
+          Total {money(total, { currency: holding.currency })}. {side === 'buy' ? 'Average cost is recalculated and a lot is added.' : 'Lots are consumed FIFO and the realised gain is recorded.'}
         </div>
         <div className="modal-actions">
           <button type="button" className="btn ghost" onClick={onClose}>
@@ -361,6 +534,61 @@ function TradeModal({ holding, onClose, onSave }: { holding: Holding; onClose: (
           </button>
           <button type="submit" className={`btn ${side === 'buy' ? 'primary' : 'accent'}`}>
             {side === 'buy' ? 'Buy' : 'Sell'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function DividendModal({ holding, onClose, onSave }: { holding: Holding; onClose: () => void; onSave: (amount: number, accountId: string | null, date: string) => void }) {
+  const { accounts } = useStore()
+  const [amount, setAmount] = useState('')
+  const [date, setDate] = useState(today())
+  const [accountId, setAccountId] = useState(accounts.find((a) => !a.archived)?.id ?? '')
+  const [record, setRecord] = useState(true)
+  return (
+    <Modal title={`Dividend — ${holding.symbol}`} onClose={onClose} width={420}>
+      <form
+        className="stack"
+        style={{ gap: 14 }}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (Number(amount) > 0) onSave(Number(amount), record ? accountId || null : null, date)
+        }}
+      >
+        <div className="form-grid">
+          <div className="field">
+            <label>Amount ({holding.currency})</label>
+            <input className="input" type="number" step="0.01" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} autoFocus />
+          </div>
+          <div className="field">
+            <label>Date</label>
+            <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+          <label className="check full">
+            <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} />
+            Also record it as income
+          </label>
+          {record && (
+            <div className="field full">
+              <label>Account</label>
+              <select className="select" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.currency})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn primary">
+            Record dividend
           </button>
         </div>
       </form>

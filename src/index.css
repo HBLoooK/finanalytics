@@ -2137,3 +2137,14 @@ body,
     display: none !important;
   }
 }
+
+/* clickable chart elements */
+.clickable,
+.tx-row.clickable,
+.bar-row.clickable {
+  cursor: pointer;
+}
+.recharts-bar-rectangle.clickable:hover,
+.recharts-pie-sector.clickable:hover {
+  opacity: 0.85;
+}

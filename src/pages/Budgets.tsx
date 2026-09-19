@@ -1,30 +1,43 @@
 import { useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, LineChart as LineChartIcon, Plus, Repeat, Trash2, Wand2 } from 'lucide-react'
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useConverter, useStore } from '../store'
-import { budgetProgress, inMonth, totals } from '../lib/analytics'
-import { addMonths, monthKey, monthLabel, today, sum } from '../lib/utils'
-import { Card, Empty, Gauge, Modal, Money, confirmDelete, useMoney } from '../components/ui'
+import { budgetProgress, budgetTemplates, dailySpend, inMonth, totals } from '../lib/analytics'
+import { addMonths, monthKey, monthLabel, today, sum, currentPeriod } from '../lib/utils'
+import { Card, ChartTooltip, Empty, Gauge, Modal, Money, axisProps, confirmDelete, useMoney } from '../components/ui'
 
 export function Budgets() {
-  const { budgets, transactions, categories, accounts, setBudget, deleteBudget } = useStore()
+  const { budgets, transactions, categories, accounts, setBudget, deleteBudget, settings } = useStore()
   const conv = useConverter()
   const money = useMoney()
-  const [month, setMonth] = useState(monthKey(today()))
+  const [month, setMonth] = useState(currentPeriod(settings.monthStartDay))
   const [adding, setAdding] = useState(false)
 
   const rows = useMemo(
-    () => budgetProgress(budgets, transactions, categories, accounts, conv, month).sort((a, b) => b.pct - a.pct),
-    [budgets, transactions, categories, accounts, conv, month],
+    () => budgetProgress(budgets, transactions, categories, accounts, conv, month, settings.monthStartDay).sort((a, b) => b.pct - a.pct),
+    [budgets, transactions, categories, accounts, conv, month, settings.monthStartDay],
   )
-  const totalLimit = sum(rows.map((r) => r.limit))
+  const templates = useMemo(() => budgetTemplates(transactions, accounts, conv), [transactions, accounts, conv])
+  const totalLimit = sum(rows.map((r) => r.limitWithRollover))
   const totalSpent = sum(rows.map((r) => r.spent))
   const monthTotals = totals(inMonth(transactions, month), accounts, conv)
   const unbudgeted = categories.filter((c) => c.kind === 'expense' && !budgets.some((b) => b.categoryId === c.id))
 
-  const isCurrent = month === monthKey(today())
+  const isCurrent = month === currentPeriod(settings.monthStartDay)
   const daysInMonth = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate()
   const dayOfMonth = isCurrent ? new Date().getDate() : daysInMonth
   const monthPct = (dayOfMonth / daysInMonth) * 100
+
+  /** Ideal vs actual remaining budget through the month. */
+  const burnDown = useMemo(() => {
+    const daily = dailySpend(transactions, accounts, conv, month)
+    const limit = totalLimit
+    let cum = 0
+    return daily.map((d) => {
+      cum += d.expense
+      return { day: d.day, ideal: Math.max(0, limit - (limit * d.day) / daily.length), actual: Math.max(0, limit - cum) }
+    })
+  }, [transactions, accounts, conv, month, totalLimit])
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -43,9 +56,35 @@ export function Budgets() {
             </button>
           )}
         </div>
-        <button className="btn primary" onClick={() => setAdding(true)} disabled={!unbudgeted.length}>
-          <Plus size={16} /> New budget
-        </button>
+        <div className="flex wrap" style={{ gap: 8 }}>
+          <button
+            className="btn sm"
+            title="Apply the 50/30/20 split of your average income to the biggest categories"
+            onClick={() => {
+              if (!window.confirm('Set needs/wants/savings limits from the 50/30/20 rule? Existing limits are replaced.')) return
+              const needs = ['c_housing', 'c_groceries', 'c_utilities', 'c_transport', 'c_health']
+              const wants = ['c_dining', 'c_entertainment', 'c_shopping', 'c_travel', 'c_subscriptions']
+              for (const c of categories.filter((x) => x.kind === 'expense')) {
+                const group = needs.includes(c.id) ? templates.fifty / 5 : wants.includes(c.id) ? templates.thirty / 5 : 0
+                if (group > 0) setBudget(c.id, Math.round(group))
+              }
+            }}
+          >
+            <Wand2 size={14} /> 50/30/20
+          </button>
+          <button
+            className="btn sm"
+            title="Carry each unspent budget into the next month"
+            onClick={() => {
+              for (const r of rows) setBudget(r.categoryId, r.limit, { rollover: true, rolloverAmount: Math.max(0, Math.round(r.remaining)) })
+            }}
+          >
+            <Repeat size={14} /> Roll over leftovers
+          </button>
+          <button className="btn primary" onClick={() => setAdding(true)} disabled={!unbudgeted.length}>
+            <Plus size={16} /> New budget
+          </button>
+        </div>
       </div>
 
       <div className="grid dash-grid">
@@ -92,6 +131,24 @@ export function Budgets() {
             Share of spending covered by budgets
           </div>
         </Card>
+        <Card className="col-4" title="Burn-down" sub="Ideal pace vs what you actually spent">
+          <div style={{ height: 120 }}>
+            <ResponsiveContainer>
+              <AreaChart data={burnDown} margin={{ left: -22, right: 4, top: 4 }}>
+                <CartesianGrid vertical={false} stroke="var(--border)" />
+                <XAxis dataKey="day" {...axisProps} interval={9} />
+                <YAxis {...axisProps} tickFormatter={(v) => money(v, { notation: 'compact', maximumFractionDigits: 0 })} />
+                <Tooltip content={<ChartTooltip labelFormatter={(l) => `Day ${l}`} />} />
+                <Area type="monotone" dataKey="ideal" name="Ideal remaining" stroke="var(--muted)" strokeDasharray="4 4" fill="none" strokeWidth={1.5} dot={false} />
+                <Area type="monotone" dataKey="actual" name="Actual remaining" stroke="#e05be0" strokeWidth={2} fill="none" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <LineChartIcon size={12} /> Below the dotted line means you are ahead of budget.
+          </div>
+        </Card>
+
         <Card className="col-4">
           <div className="muted" style={{ fontSize: 12 }}>
             Status
@@ -132,6 +189,7 @@ export function Budgets() {
                   row={r}
                   monthPct={monthPct}
                   onChange={(v) => setBudget(r.categoryId, v)}
+                  onToggleRollover={() => setBudget(r.categoryId, r.limit, { rollover: !r.rollover })}
                   onDelete={() => confirmDelete(`the ${r.category!.name} budget`) && deleteBudget(r.id)}
                 />
               ))}
@@ -160,11 +218,13 @@ function BudgetRow({
   row,
   monthPct,
   onChange,
+  onToggleRollover,
   onDelete,
 }: {
   row: ReturnType<typeof budgetProgress>[number]
   monthPct: number
   onChange: (v: number) => void
+  onToggleRollover: () => void
   onDelete: () => void
 }) {
   const money = useMoney()
@@ -211,7 +271,7 @@ function BudgetRow({
               />
             ) : (
               <button className="link" onClick={() => setEditing(true)} title="Click to edit limit">
-                {money(row.limit)}
+                {money(row.limitWithRollover)}
               </button>
             )}
           </span>
@@ -234,8 +294,14 @@ function BudgetRow({
           }}
         />
       </div>
-      <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
-        {row.pct >= 100 ? 'Over budget' : pace > 10 ? 'Spending faster than the month' : pace < -10 ? 'Well under pace' : 'On pace'}
+      <div className="flex between" style={{ marginTop: 8 }}>
+        <div className="muted" style={{ fontSize: 11 }}>
+          {row.pct >= 100 ? 'Over budget' : pace > 10 ? 'Spending faster than the month' : pace < -10 ? 'Well under pace' : 'On pace'}
+          {row.rolloverIn ? ` · +${money(row.rolloverIn)} rolled over` : ''}
+        </div>
+        <button className={`btn sm ghost ${row.rollover ? 'on' : ''}`} style={{ color: row.rollover ? 'var(--primary-2)' : undefined }} onClick={onToggleRollover} title="Carry this month's leftover into next month">
+          <Repeat size={12} /> {row.rollover ? 'Rolls over' : 'Rollover'}
+        </button>
       </div>
     </div>
   )

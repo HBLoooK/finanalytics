@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useConverter, useStore } from '../store'
 import { byCategory, byTag, dailySpend, inMonth, monthlySeries, netWorthSeries, topPayees, totals, txBase } from '../lib/analytics'
-import { addMonths, fmtCompact, monthKey, monthLabel, today, lastNMonths } from '../lib/utils'
+import { addDays, addMonths, fmtCompact, fmtDate, monthKey, monthLabel, today, lastNMonths } from '../lib/utils'
 import { Card, ChartTooltip, Empty, Legend, Segmented, axisProps, useMoney } from '../components/ui'
+import { DrillDown, type DrillFilter } from '../components/DrillDown'
 
 const P = '#6270f2'
 const M = '#e05be0'
@@ -11,11 +12,12 @@ const Y = '#f2cf3a'
 const G = '#3ec97a'
 
 export function Analytics() {
-  const { transactions, categories, accounts, settings } = useStore()
+  const { transactions, categories, accounts, settings, holdings, debts } = useStore()
   const conv = useConverter()
   const money = useMoney()
   const [range, setRange] = useState<'3' | '6' | '12'>('6')
   const [month, setMonth] = useState(monthKey(today()))
+  const [drill, setDrill] = useState<DrillFilter | null>(null)
   const n = Number(range)
 
   const series = useMemo(
@@ -31,7 +33,7 @@ export function Analytics() {
   const incomeCats = useMemo(() => byCategory(rangeTx, categories, accounts, conv, 'income'), [rangeTx, categories, accounts, conv])
   const payees = useMemo(() => topPayees(rangeTx, accounts, conv, 6), [rangeTx, accounts, conv])
   const tags = useMemo(() => byTag(rangeTx, accounts, conv).slice(0, 8), [rangeTx, accounts, conv])
-  const worth = useMemo(() => netWorthSeries(accounts, transactions, conv, n).map((s) => ({ ...s, label: monthLabel(s.key) })), [accounts, transactions, conv, n])
+  const worth = useMemo(() => netWorthSeries(accounts, transactions, conv, n, holdings, debts).map((s) => ({ ...s, label: monthLabel(s.key) })), [accounts, transactions, conv, n, holdings, debts])
   const daily = useMemo(() => dailySpend(transactions, accounts, conv, month), [transactions, accounts, conv, month])
   const prevDaily = useMemo(() => dailySpend(transactions, accounts, conv, addMonths(month, -1)), [transactions, accounts, conv, month])
   const dailyMerged = daily.map((d, i) => ({ ...d, prev: prevDaily[i]?.cumulative ?? null }))
@@ -59,6 +61,22 @@ export function Analytics() {
     const weeks = Math.max(1, n * 4.33)
     return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => ({ day: d, avg: sums[i]! / weeks }))
   }, [rangeTx, accounts, conv, n])
+
+  /** Daily spend heat-map for the last 12 months. */
+  const heat = useMemo(() => {
+    const end = today()
+    const start = addDays(end, -364)
+    const byDate = new Map<string, number>()
+    for (const t of transactions) if (t.type === 'expense' && t.date >= start && t.date <= end) byDate.set(t.date, (byDate.get(t.date) ?? 0) + txBase(t, accounts, conv))
+    const max = Math.max(1, ...byDate.values())
+    const cells: { date: string; value: number; level: number }[] = []
+    for (let i = 0; i <= 364; i++) {
+      const date = addDays(start, i)
+      const v = byDate.get(date) ?? 0
+      cells.push({ date, value: v, level: v === 0 ? 0 : Math.min(4, Math.ceil((v / max) * 4)) })
+    }
+    return { cells, max }
+  }, [transactions, accounts, conv])
 
   const avgMonthly = series.length ? rangeTotals.expense / series.length : 0
   const biggestMonth = series.reduce((a, b) => (b.expense > a.expense ? b : a), series[0]!)
@@ -189,7 +207,7 @@ export function Analytics() {
           </div>
         </Card>
 
-        <Card className="col-5" title="Net worth" sub="Cash accounts, end of month">
+        <Card className="col-5" title="Net worth" sub="Cash, holdings and debts, end of month">
           <div style={{ height: 240 }}>
             <ResponsiveContainer>
               <AreaChart data={worth} margin={{ left: -10, right: 4 }}>
@@ -229,7 +247,12 @@ export function Analytics() {
         <Card className="col-5" title="Category breakdown" sub={`Last ${n} months`}>
           <div className="stack" style={{ gap: 10 }}>
             {cats.slice(0, 8).map((c) => (
-              <div key={c.id} className="bar-row" style={{ marginBottom: 0 }}>
+              <div
+                key={c.id}
+                className="bar-row clickable"
+                style={{ marginBottom: 0 }}
+                onClick={() => setDrill({ title: c.name, subtitle: `Last ${n} months`, match: (t) => t.type === 'expense' && (t.categoryId === c.id || Boolean(t.splits?.some((s) => s.categoryId === c.id))) })}
+              >
                 <div className="t">
                   <span>
                     {c.icon} {c.name}
@@ -260,10 +283,47 @@ export function Analytics() {
           </div>
         </Card>
 
+        <Card className="col-12" title="Spending heat-map" sub="Last 12 months, one square per day">
+          <div className="heat-grid">
+            {heat.cells.map((c) => (
+              <div
+                key={c.date}
+                className="heat-cell"
+                title={`${fmtDate(c.date, settings.locale)} · ${money(c.value, { maximumFractionDigits: 0 })}`}
+                style={{
+                  background:
+                    c.level === 0
+                      ? 'var(--panel-2)'
+                      : `color-mix(in srgb, var(--accent) ${[0, 25, 45, 70, 100][c.level]!}%, var(--panel-2))`,
+                }}
+                onClick={() =>
+                  setDrill({
+                    title: fmtDate(c.date, settings.locale),
+                    subtitle: `${money(c.value)} spent`,
+                    match: (t) => t.date === c.date && t.type === 'expense',
+                  })
+                }
+              />
+            ))}
+          </div>
+          <div className="heat-legend">
+            <span>Less</span>
+            {[0, 1, 2, 3, 4].map((l) => (
+              <i key={l} style={{ background: l === 0 ? 'var(--panel-2)' : `color-mix(in srgb, var(--accent) ${[0, 25, 45, 70, 100][l]!}, var(--panel-2))` }} />
+            ))}
+            <span>More · peak {money(heat.max, { maximumFractionDigits: 0 })}</span>
+          </div>
+        </Card>
+
         <Card className="col-4" title="Top payees" sub="Where the money goes">
           <div className="tx-list">
             {payees.map((p, i) => (
-              <div className="tx-row" key={p.payee} style={{ gridTemplateColumns: '28px 1fr auto', '--i': i } as React.CSSProperties}>
+              <div
+                className="tx-row clickable"
+                key={p.payee}
+                style={{ gridTemplateColumns: '28px 1fr auto', '--i': i } as React.CSSProperties}
+                onClick={() => setDrill({ title: p.payee, subtitle: `${p.count} payments · avg ${money(p.total / p.count)}`, match: (t) => t.payee === p.payee })}
+              >
                 <div className="muted" style={{ fontWeight: 600 }}>
                   #{i + 1}
                 </div>
@@ -312,6 +372,9 @@ export function Analytics() {
           )}
         </Card>
       </div>
+
+      {drill && <DrillDown filter={drill} onClose={() => setDrill(null)} />}
     </div>
   )
 }
+

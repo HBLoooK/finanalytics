@@ -1,15 +1,16 @@
 import { useMemo, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, Pause, Pencil, Play, Plus, SkipForward, Trash2 } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Link2, Pause, Pencil, Play, Plus, SkipForward, Sparkles, Trash2 } from 'lucide-react'
 import { useConverter, useStore } from '../store'
 import type { Frequency, Recurring, TxType } from '../lib/types'
 import { monthlyCommitments, upcoming } from '../lib/analytics'
-import { addMonths, daysInMonth, fmtDate, freqLabel, monthKey, monthLabel, nextOccurrence, parseTags, perMonthFactor, today } from '../lib/utils'
+import { addMonths, daysInMonth, fmtDate, freqLabel, monthKey, monthLabel, nextOccurrence, parseTags, perMonthFactor, round2, sum, today } from '../lib/utils'
 import { Card, Empty, Modal, Money, Tabs, confirmDelete, useMoney } from '../components/ui'
+import { detectRecurring, matchBills } from '../lib/matching'
 
 type View = 'upcoming' | 'calendar' | 'all'
 
 export function RecurringPage() {
-  const { recurring, accounts, categories, postRecurring, skipRecurring, updateRecurring, deleteRecurring, addRecurring, settings } = useStore()
+  const { recurring, accounts, categories, postRecurring, skipRecurring, updateRecurring, deleteRecurring, addRecurring, settings, transactions, updateTransaction } = useStore()
   const conv = useConverter()
   const money = useMoney()
   const [view, setView] = useState<View>('upcoming')
@@ -20,6 +21,20 @@ export function RecurringPage() {
   const next30 = useMemo(() => upcoming(recurring, 30), [recurring])
   const overdue = next30.filter((u) => u.daysAway < 0)
   const subs = recurring.filter((r) => r.active && r.type === 'expense' && r.categoryId === 'c_subscriptions')
+
+  // A variable bill is estimated from the last three recorded amounts.
+  const estimateOf = (r: Recurring) => {
+    const history = transactions
+      .filter((t) => t.recurringId === r.id || (!r.autoPost && (t.payee || '').toLowerCase() === (r.payee || r.name).toLowerCase()))
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .slice(0, 3)
+    return history.length ? round2(sum(history.map((t) => t.amount)) / history.length) : r.amount
+  }
+  const amountOf = (r: Recurring) => (r.variable ? estimateOf(r) : r.amount)
+
+  // Auto-match: link an existing transaction to the bill it settles.
+  const matches = useMemo(() => matchBills(recurring, transactions.filter((t) => !t.recurringId)), [recurring, transactions])
+  const detected = useMemo(() => detectRecurring(transactions, new Set(recurring.map((r) => (r.payee || r.name).toLowerCase()))), [transactions, recurring])
   const subsMonthly = subs.reduce((s, r) => s + conv(r.amount, accounts.find((a) => a.id === r.accountId)?.currency ?? '') * perMonthFactor[r.frequency], 0)
 
   // calendar
@@ -119,7 +134,12 @@ export function RecurringPage() {
                       </div>
                     </div>
                     <div className={`tx-amount ${u.rec.type === 'income' ? 'pos' : u.rec.type === 'transfer' ? 'transfer' : 'neg'}`}>
-                      <Money value={u.rec.type === 'expense' ? -u.rec.amount : u.rec.amount} currency={accOf(u.rec)?.currency} signed={u.rec.type !== 'transfer'} />
+                      <Money value={u.rec.type === 'expense' ? -amountOf(u.rec) : amountOf(u.rec)} currency={accOf(u.rec)?.currency} signed={u.rec.type !== 'transfer'} />
+                      {u.rec.variable && (
+                        <span className="muted" style={{ fontSize: 10.5, marginLeft: 4 }}>
+                          est.
+                        </span>
+                      )}
                     </div>
                     <div className="flex" style={{ gap: 4 }}>
                       {u.date === u.rec.nextDate && (
@@ -226,9 +246,14 @@ export function RecurringPage() {
                       <td className="muted">{accOf(r)?.name}</td>
                       <td>{r.autoPost ? <span className="tag">auto</span> : <span className="muted">manual</span>}</td>
                       <td className={`num tx-amount ${r.type === 'income' ? 'pos' : r.type === 'transfer' ? 'transfer' : 'neg'}`}>
-                        <Money value={r.type === 'expense' ? -r.amount : r.amount} currency={accOf(r)?.currency} signed={r.type !== 'transfer'} />
+                        <Money value={r.type === 'expense' ? -amountOf(r) : amountOf(r)} currency={accOf(r)?.currency} signed={r.type !== 'transfer'} />
+                        {r.variable && (
+                          <span className="muted" style={{ fontSize: 10.5, marginLeft: 4 }}>
+                            est.
+                          </span>
+                        )}
                       </td>
-                      <td className="num muted">{money(conv(r.amount, accOf(r)?.currency ?? '') * perMonthFactor[r.frequency], { maximumFractionDigits: 0 })}</td>
+                      <td className="num muted">{money(conv(amountOf(r), accOf(r)?.currency ?? '') * perMonthFactor[r.frequency], { maximumFractionDigits: 0 })}</td>
                       <td>
                         <div className="row-actions show-actions" style={{ opacity: 1 }}>
                           <button className="mini-btn" title={r.active ? 'Pause' : 'Resume'} onClick={() => updateRecurring(r.id, { active: !r.active })}>
@@ -249,6 +274,78 @@ export function RecurringPage() {
           </div>
         )}
       </Card>
+
+      {matches.length > 0 && (
+        <Card className="col-12" title="Settle bills with existing transactions" sub="These transactions look like bills you already track — link them instead of double counting.">
+          <div className="stack" style={{ gap: 8 }}>
+            {matches.slice(0, 8).map((m) => (
+              <div key={`${m.rec.id}-${m.tx.id}`} className="flex between subtle-panel" style={{ padding: '8px 12px', fontSize: 13 }}>
+                <span style={{ minWidth: 0 }}>
+                  <b>{m.rec.name}</b> <span className="muted">← {m.tx.payee}</span>
+                  <div className="muted" style={{ fontSize: 11.5 }}>
+                    {fmtDate(m.tx.date, settings.locale)} · {money(m.tx.amount)} (bill {money(m.rec.amount)}) · {m.dayDiff}d apart
+                  </div>
+                </span>
+                <button
+                  className="btn sm"
+                  onClick={() => {
+                    updateTransaction(m.tx.id, { recurringId: m.rec.id })
+                    if (m.tx.date >= m.rec.nextDate) updateRecurring(m.rec.id, { nextDate: nextOccurrence(m.rec.nextDate, m.rec.frequency) })
+                  }}
+                >
+                  <Link2 size={13} /> Link
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {detected.length > 0 && (
+        <Card className="col-12" title="Looks like a bill" sub="Same payee, similar amount, regular spacing — track it and it appears in your forecast.">
+          <div className="stack" style={{ gap: 8 }}>
+            {detected.slice(0, 6).map((d) => (
+              <div key={d.payee} className="flex between subtle-panel" style={{ padding: '8px 12px', fontSize: 13 }}>
+                <span style={{ minWidth: 0 }}>
+                  <b>{d.payee}</b>{' '}
+                  <span className="muted">
+                    · every ~{d.spacingDays} days · avg {money(d.amount)}
+                  </span>
+                  <div className="muted" style={{ fontSize: 11.5 }}>
+                    {d.dates.length} occurrences · {Math.round(d.confidence * 100)}% confidence
+                  </div>
+                </span>
+                <button
+                  className="btn sm"
+                  onClick={() =>
+                    addRecurring({
+                      name: d.payee,
+                      type: 'expense',
+                      amount: d.amount,
+                      frequency: d.frequency,
+                      nextDate: nextOccurrence(d.dates[d.dates.length - 1]!, d.frequency),
+                      endDate: null,
+                      accountId: d.accountId,
+                      toAccountId: null,
+                      categoryId: d.categoryId,
+                      payee: d.payee,
+                      note: '',
+                      autoPost: false,
+                      active: true,
+                      remindDays: 3,
+                      tags: [],
+                      variable: true,
+                      autoMatch: true,
+                    })
+                  }
+                >
+                  <Sparkles size={13} /> Track it
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {editing && (
         <RecurringModal
@@ -280,6 +377,7 @@ function RecurringModal({ initial, onClose, onSave }: { initial: Recurring | nul
   const [autoPost, setAutoPost] = useState(initial?.autoPost ?? true)
   const [remindDays, setRemindDays] = useState(String(initial?.remindDays ?? 3))
   const [tags, setTags] = useState((initial?.tags ?? []).join(', '))
+  const [variable, setVariable] = useState(initial?.variable ?? false)
   const cats = categories.filter((c) => c.kind === (type === 'income' ? 'income' : 'expense'))
   const effCat = cats.some((c) => c.id === categoryId) ? categoryId : (cats[0]?.id ?? '')
 
@@ -307,6 +405,8 @@ function RecurringModal({ initial, onClose, onSave }: { initial: Recurring | nul
             active: initial?.active ?? true,
             remindDays: Number(remindDays) || 0,
             tags: parseTags(tags),
+            variable,
+            autoMatch: initial?.autoMatch ?? true,
           })
         }}
       >
@@ -325,6 +425,13 @@ function RecurringModal({ initial, onClose, onSave }: { initial: Recurring | nul
           <div className="field">
             <label>Amount</label>
             <input className="input" type="number" step="0.01" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Billing</label>
+            <label className="check">
+              <input type="checkbox" checked={variable} onChange={(e) => setVariable(e.target.checked)} />
+              Amount varies (electricity, phone…) — use the average of the last three
+            </label>
           </div>
           <div className="field">
             <label>Frequency</label>

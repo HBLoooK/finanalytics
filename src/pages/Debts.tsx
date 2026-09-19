@@ -1,23 +1,26 @@
 import { useMemo, useState } from 'react'
-import { Pencil, Plus, Trash2, Wallet } from 'lucide-react'
+import { Percent, Pencil, Plus, Trash2, Wallet } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useStore } from '../store'
 import type { Debt } from '../lib/types'
 import { CATEGORY_COLORS } from '../lib/seed'
-import { debtStrategy, payoffPlan } from '../lib/analytics'
-import { fmtCompact, fmtDate, today } from '../lib/utils'
+import { debtStrategy, interestPaid, payoffPlan } from '../lib/analytics'
+import { fmtCompact, fmtDate, round2, today } from '../lib/utils'
 import { Card, ChartTooltip, Empty, Modal, Money, Segmented, axisProps, confirmDelete, useMoney } from '../components/ui'
+import { useToast } from '../components/Toasts'
 
 const KINDS: Debt['kind'][] = ['credit_card', 'loan', 'mortgage', 'student', 'personal', 'other']
 const kindLabel = (k: string) => k.replace('_', ' ').replace(/^\w/, (m) => m.toUpperCase())
 
 export function Debts() {
-  const { debts, debtPayments, accounts, settings, addDebt, updateDebt, deleteDebt, payDebt } = useStore()
+  const { debts, debtPayments, accounts, settings, addDebt, updateDebt, deleteDebt, payDebt, accrueInterest } = useStore()
   const money = useMoney()
+  const toast = useToast()
   const [editing, setEditing] = useState<Debt | 'new' | null>(null)
   const [paying, setPaying] = useState<Debt | null>(null)
   const [extra, setExtra] = useState('200')
   const [strategy, setStrategy] = useState<'avalanche' | 'snowball'>('avalanche')
+  const [amort, setAmort] = useState<string | null>(null)
 
   const active = useMemo(() => debts.filter((d) => d.balance > 0), [debts])
   const total = active.reduce((s, d) => s + d.balance, 0)
@@ -79,6 +82,22 @@ export function Debts() {
           <div className="l">Interest this month</div>
           <div className="v" style={{ color: 'var(--orange)' }}>
             <Money value={monthlyInterest} />
+          </div>
+        </div>
+        <div>
+          <div className="l">Interest paid to date</div>
+          <div className="v" style={{ color: 'var(--orange)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Money value={debts.reduce((s, d) => s + interestPaid(d, debtPayments), 0)} />
+            <button
+              className="btn sm ghost"
+              title="Add this month's interest to every debt that carries an APR"
+              onClick={() => {
+                const n = accrueInterest()
+                toast(n ? `Accrued interest on ${n} debt${n === 1 ? '' : 's'}` : 'Interest is already up to date')
+              }}
+            >
+              <Percent size={13} /> Accrue
+            </button>
           </div>
         </div>
       </div>
@@ -143,7 +162,59 @@ export function Debts() {
                         : p.months === Infinity
                           ? `Minimum ${money(d.minPayment)} does not cover interest — increase it`
                           : `At ${money(d.minPayment)}/mo: paid off in ${p.months} months, ${money(p.interest, { maximumFractionDigits: 0 })} interest`}
+                      {' · '}
+                      <span style={{ color: 'var(--orange)' }}>{money(interestPaid(d, debtPayments))} interest so far</span>
                     </div>
+                    <div className="flex wrap" style={{ gap: 6, marginTop: 8 }}>
+                      <button className="btn sm ghost" onClick={() => setAmort(amort === d.id ? null : d.id)}>
+                        {amort === d.id ? 'Hide schedule' : 'Amortisation schedule'}
+                      </button>
+                      {[0, 50, 150].map((extra) => (
+                        <button
+                          key={extra}
+                          className="btn sm ghost"
+                          title={`What if you paid ${money(d.minPayment + extra)} per month instead`}
+                          onClick={() => {
+                            const what = payoffPlan(d.balance, d.apr, d.minPayment + extra)
+                            toast(
+                              what.months === Infinity
+                                ? 'That payment still does not cover the interest'
+                                : `${money(d.minPayment + extra)}/mo → paid off in ${what.months} months, ${money(what.interest, { maximumFractionDigits: 0 })} interest (saves ${money(Math.max(0, p.interest - what.interest), { maximumFractionDigits: 0 })})`,
+                            )
+                          }}
+                        >
+                          +{extra ? money(extra, { maximumFractionDigits: 0 }) : 'what if'}
+                        </button>
+                      ))}
+                    </div>
+                    {amort === d.id && (
+                      <div className="table-wrap" style={{ marginTop: 10, maxHeight: 260, overflowY: 'auto' }}>
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th className="num">Month</th>
+                              <th className="num">Payment</th>
+                              <th className="num">Interest</th>
+                              <th className="num">Principal</th>
+                              <th className="num">Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {p.schedule.slice(1).map((row) => (
+                              <tr key={row.month}>
+                                <td className="num">{row.month}</td>
+                                <td className="num">{money(d.minPayment)}</td>
+                                <td className="num" style={{ color: 'var(--orange)' }}>
+                                  {money(row.interest)}
+                                </td>
+                                <td className="num">{money(row.principal)}</td>
+                                <td className="num">{money(row.balance)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -291,6 +362,7 @@ function DebtModal({ initial, accounts, onClose, onSave }: { initial: Debt | nul
   const [dueDay, setDueDay] = useState(String(initial?.dueDay ?? 1))
   const [accountId, setAccountId] = useState(initial?.accountId ?? accounts[0]?.id ?? '')
   const [color, setColor] = useState(initial?.color ?? CATEGORY_COLORS[0]!)
+  const [accrue, setAccrue] = useState(initial?.accrueInterest ?? true)
   return (
     <Modal title={initial ? 'Edit debt' : 'Add debt'} onClose={onClose}>
       <form
@@ -299,7 +371,7 @@ function DebtModal({ initial, accounts, onClose, onSave }: { initial: Debt | nul
         onSubmit={(e) => {
           e.preventDefault()
           if (!name.trim()) return
-          onSave({ name: name.trim(), kind, principal: Number(principal) || Number(balance) || 0, balance: Number(balance) || 0, apr: Number(apr) || 0, minPayment: Number(minPayment) || 0, dueDay: Math.min(28, Math.max(1, Number(dueDay) || 1)), color, accountId: accountId || null })
+          onSave({ name: name.trim(), kind, principal: Number(principal) || Number(balance) || 0, balance: Number(balance) || 0, apr: Number(apr) || 0, minPayment: Number(minPayment) || 0, dueDay: Math.min(28, Math.max(1, Number(dueDay) || 1)), color, accountId: accountId || null, accrueInterest: accrue, lastInterestAt: initial?.lastInterestAt ?? null, interestPaid: initial?.interestPaid ?? 0 })
         }}
       >
         <div className="form-grid">
@@ -348,6 +420,10 @@ function DebtModal({ initial, accounts, onClose, onSave }: { initial: Debt | nul
               ))}
             </select>
           </div>
+          <label className="check full">
+            <input type="checkbox" checked={accrue} onChange={(e) => setAccrue(e.target.checked)} disabled={!(Number(apr) > 0)} />
+            Accrue {Number(apr) > 0 ? `${round2(((Number(balance) || 0) * Number(apr)) / 100 / 12)} per month in interest` : 'interest (needs an APR above 0)'}
+          </label>
           <div className="field full">
             <label>Colour</label>
             <div className="flex wrap" style={{ gap: 6 }}>
