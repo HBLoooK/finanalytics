@@ -48,7 +48,11 @@ export function safeToSpend(o: ForecastOptions) {
   const nextIncome = up.find((u) => u.rec.type === 'income')
   const horizon = nextIncome ? nextIncome.date : addDays(today(), 30)
 
-  const billsDue = up.filter((u) => u.rec.type === 'expense' && u.date < horizon).reduce((s, u) => s + conv(u.rec.amount, accounts.find((a) => a.id === u.rec.accountId)?.currency ?? ''), 0)
+  // Only bills still ahead of us count; anything overdue is a backlog, not a future claim.
+  const now = today()
+  const billsDue = up
+    .filter((u) => u.rec.type === 'expense' && u.date >= now && u.date < horizon)
+    .reduce((s, u) => s + conv(u.rec.amount, accounts.find((a) => a.id === u.rec.accountId)?.currency ?? ''), 0)
 
   const key = monthKey(today())
   let budgetLeft = 0

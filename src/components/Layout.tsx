@@ -30,11 +30,14 @@ import { TransactionModal } from './TransactionModal'
 import { budgetProgress, upcoming } from '../lib/analytics'
 import { NotificationBadge, NotificationsPanel } from './Notifications'
 import { useSync } from '../lib/sync'
+import { useDesktopNotifications } from '../lib/notifications'
+import { useAutoLock } from '../lib/lock'
 import { CommandPalette } from './CommandPalette'
 import { QuickAdd } from './QuickAdd'
 import { UndoToasts } from './Toasts'
 import { TokenGate } from './TokenGate'
 import { MobileNav } from './MobileNav'
+import { LockScreen } from './LockScreen'
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -112,6 +115,9 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  useDesktopNotifications()
+  const locked = useAutoLock()
+
   const alerts = useMemo(() => {
     const over = budgetProgress(budgets, transactions, categories, accounts, conv, currentPeriod(settings.monthStartDay), settings.monthStartDay).filter((b) => b.pct >= 90).length
     const due = upcoming(recurring, 7).filter((u) => !u.rec.autoPost || u.daysAway < 0).length
@@ -137,6 +143,9 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
 
   return (
     <div className="app">
+      <a href="#main-content" className="skip-link">
+        Skip to content
+      </a>
       {open && <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 39 }} />}
       <aside className={`sidebar ${open ? 'open' : ''}`}>
         <div className="brand">
@@ -224,7 +233,7 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
             </NavLink>
           </div>
         </header>
-        <div className="page" key={loc.pathname + (search ? ':search' : '')}>
+        <div className="page" id="main-content" key={loc.pathname + (search ? ':search' : '')}>
           {children}
         </div>
       </main>
@@ -239,7 +248,9 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
       {showNotif && <NotificationsPanel onClose={() => setShowNotif(false)} />}
       {palette && <CommandPalette onClose={() => setPalette(false)} />}
       <UndoToasts />
+      <div aria-live="polite" className="sr-only" />
       <TokenGate />
+      {locked && <LockScreen />}
       <button className="hidden-shortcut" onClick={() => navigate('/transactions')} aria-hidden tabIndex={-1} />
     </div>
   )

@@ -7,6 +7,7 @@ export interface Category {
   color: string
   kind: 'expense' | 'income'
   parentId?: string | null // category group (Housing → Rent, Utilities…)
+  taxDeductible?: boolean // included in the tax export on the Reports page
 }
 
 export type AccountType = 'checking' | 'savings' | 'credit' | 'cash' | 'investment'

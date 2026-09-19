@@ -487,8 +487,9 @@ export const useStore = create<Store>()(
           rules: data.rules ?? [],
           settings: { ...defaultSettings, ...(data.settings ?? {}), rates: { ...defaultSettings.rates, ...(data.settings?.rates ?? {}) } },
         })),
-      resetDemo: () => set(() => demoData()),
-      resetEmpty: () => set(() => emptyData()),
+      // Explicit user actions: never send them back through the first-run wizard.
+      resetDemo: () => set(() => ({ ...demoData(), settings: { ...demoData().settings, onboarded: true } })),
+      resetEmpty: () => set(() => ({ ...emptyData(), settings: { ...emptyData().settings, onboarded: true } })),
       clearAll: () => {
         const snapshot = get()
         set((s) => ({

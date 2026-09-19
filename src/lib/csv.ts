@@ -75,6 +75,59 @@ export function parseAmountLoose(s: string): number | null {
   return neg ? -Math.abs(v) : v
 }
 
+/** Minimal OFX/QIF reader: returns rows of {date, payee, amount, note, type}. */
+export interface ParsedRow {
+  date: string
+  payee: string
+  amount: number
+  note: string
+}
+
+export function parseOFX(text: string): ParsedRow[] {
+  const out: ParsedRow[] = []
+  const blocks = text.split(/<STMTTRN>/i).slice(1)
+  const get = (b: string, tag: string) => b.match(new RegExp(`<${tag}>([^<]*)`, 'i'))?.[1]?.trim() ?? ''
+  for (const b of blocks) {
+    const raw = get(b, 'DTPOSTED')
+    const date = raw ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : ''
+    const amount = Number(get(b, 'TRNAMT'))
+    if (!date || !Number.isFinite(amount)) continue
+    out.push({ date, payee: get(b, 'NAME') || get(b, 'MEMO') || 'Imported', amount, note: get(b, 'MEMO') })
+  }
+  return out
+}
+
+export function parseQIF(text: string): ParsedRow[] {
+  const out: ParsedRow[] = []
+  let cur: Partial<ParsedRow> = {}
+  let dayFirst = false
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('D')) {
+      const v = line.slice(1).trim()
+      // QIF uses the locale's format; guess from the first field
+      dayFirst = /^\d{1,2}[/.]/.test(v)
+      cur.date = v
+    } else if (line.startsWith('T')) cur.amount = Number(line.slice(1).replace(/,/g, ''))
+    else if (line.startsWith('P')) cur.payee = line.slice(1).trim()
+    else if (line.startsWith('M')) cur.note = line.slice(1).trim()
+    else if (line.startsWith('^')) {
+      if (cur.date && typeof cur.amount === 'number') {
+        const norm = cur.date.replace(/[/.]/g, '-')
+        const parts = norm.split('-').map(Number)
+        let iso = ''
+        if (parts.length === 3) {
+          const [a, b, c] = parts
+          const year = (c ?? 0) < 100 ? 2000 + (c ?? 0) : (c ?? 0)
+          iso = dayFirst ? `${year}-${String(b).padStart(2, '0')}-${String(a).padStart(2, '0')}` : `${year}-${String(a).padStart(2, '0')}-${String(b).padStart(2, '0')}`
+        }
+        if (iso) out.push({ date: iso, payee: cur.payee ?? 'Imported', amount: cur.amount, note: cur.note ?? '' })
+      }
+      cur = {}
+    }
+  }
+  return out
+}
+
 export interface ColumnMap {
   date: number
   payee: number

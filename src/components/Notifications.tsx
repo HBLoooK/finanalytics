@@ -168,9 +168,11 @@ export function useNotificationItems(): Item[] {
   }, [budgets, transactions, categories, accounts, recurring, debts, goals, settings.monthStartDay, settings.locale, conv, money])
 }
 
+const NO_RECORDS: NotificationRecord[] = []
+
 export function NotificationBadge() {
   const items = useNotificationItems()
-  const read = useStore((s) => s.settings.notifications ?? [])
+  const read = useStore((s) => s.settings.notifications) ?? NO_RECORDS
   const now = today()
   const unread = items.filter((i) => {
     const r = read.find((x) => x.ref === i.key)
@@ -181,7 +183,7 @@ export function NotificationBadge() {
 
 export function NotificationsPanel({ onClose }: { onClose: () => void }) {
   const items = useNotificationItems()
-  const records = useStore((s) => s.settings.notifications ?? [])
+  const records = useStore((s) => s.settings.notifications) ?? NO_RECORDS
   const updateSettings = useStore((s) => s.updateSettings)
   const [showRead, setShowRead] = useState(false)
   const now = today()

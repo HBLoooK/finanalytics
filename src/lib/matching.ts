@@ -6,28 +6,36 @@ import { addDays, daysBetween, monthKey, perMonthFactor, sum, today } from './ut
 /* ---------- merchant normalisation ---------- */
 
 const NOISE: [RegExp, string][] = [
-  [/amzn\s*mktp|amazon\.\w+|amzn/i, 'Amazon'],
-  [/sq\s*\*|square\s*inc/i, 'Square'],
-  [/tst\*\s*/i, ''],
-  [/pos\s*\/|purchase\s*\/|card\s*purchase/i, ''],
+  [/amzn[\s*]*mktp([\s*]*us)?/i, 'Amazon'],
+  [/amazon(\.\w+)?[\s*]*mktp/i, 'Amazon'],
+  [/amazon(\.\w+)?/i, 'Amazon'],
+  [/amzn/i, 'Amazon'],
+  [/square[\s*]*inc/i, 'Square'],
+  [/^sq[\s*]*\*/i, ''],
+  [/tst[\s*]*\*/i, ''],
+  [/^pos[\s*]*\/?|^purchase[\s*]*\/?|^card[\s*]*purchase/i, ''],
   [/www\.[a-z0-9-]+\.[a-z]{2,}/i, ''],
-  [/#\d{3,}/g, ''],
-  [/\b\d{6,}\b/g, ''],
-  [/\*/g, ' '],
-  [/\s{2,}/g, ' '],
+  [/\bcd[\s*]*\d{4,}/i, ''],
 ]
 
 /** Clean up a raw bank payee string: "AMZN*MKTP US*2K4Q8" → "Amazon". */
 export const normalizePayee = (raw: string, aliases: { from: string; to: string }[] = [], rules: Rule[] = []) => {
-  let s = (raw ?? '').trim()
-  for (const a of aliases) if (s.toLowerCase().includes(a.from)) return a.to
+  const original = (raw ?? '').trim()
+  for (const a of aliases) if (original.toLowerCase().includes(a.from)) return a.to
   for (const r of rules) {
     const to = r.renameTo.trim()
-    if (r.enabled && to && s.toLowerCase().includes(to.toLowerCase())) return to
+    if (r.enabled && to && original.toLowerCase().includes(to.toLowerCase())) return to
   }
+  let s = original
+  // Reference codes banks append: #1234, 2K4Q8, 0015566778
+  s = s.replace(/#\w+/g, ' ')
+  s = s.replace(/\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{4,}\b/gi, ' ')
+  s = s.replace(/\b\d{4,}\b/g, ' ')
   for (const [re, to] of NOISE) s = s.replace(re, to)
-  s = s.replace(/[.,\-|]+$/, '').trim()
-  return s || raw || '—'
+  s = s.replace(/[\*]+/g, ' ')
+  s = s.replace(/\s{2,}/g, ' ')
+  s = s.replace(/[.,\-|/]+$/, '').trim()
+  return s || original || '—'
 }
 
 /** Group raw payees that normalise to the same name — used to propose aliases. */

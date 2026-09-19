@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from 'recharts'
 import { useConverter, useStore } from '../store'
 import { byCategory, byTag, dailySpend, inMonth, monthlySeries, netWorthSeries, topPayees, totals, txBase } from '../lib/analytics'
-import { addDays, addMonths, fmtCompact, fmtDate, monthKey, monthLabel, today, lastNMonths } from '../lib/utils'
+import { addDays, addMonths, fmtCompact, fmtDate, monthKey, monthLabel, sum, today, lastNMonths } from '../lib/utils'
 import { Card, ChartTooltip, Empty, Legend, Segmented, axisProps, useMoney } from '../components/ui'
 import { DrillDown, type DrillFilter } from '../components/DrillDown'
 
@@ -77,6 +77,24 @@ export function Analytics() {
     }
     return { cells, max }
   }, [transactions, accounts, conv])
+
+  /** Cash-flow Sankey: income sources → the pot → categories. */
+  const flow = useMemo(() => {
+    const income = byCategory(rangeTx, categories, accounts, conv, 'income').slice(0, 4)
+    const spend = cats.slice(0, 5)
+    const pot = sum(spend.map((c) => c.value))
+    if (!income.length || !spend.length || pot <= 0) return null
+    const nodes = [
+      ...income.map((c) => ({ name: c.name, color: c.color })),
+      { name: 'Available', color: '#6270f2' },
+      ...spend.map((c) => ({ name: c.name, color: c.color })),
+    ]
+    const links = [
+      ...income.map((c) => ({ source: income.indexOf(c), target: income.length, value: Math.max(1, c.value) })),
+      ...spend.map((c) => ({ source: income.length, target: income.length + 1 + spend.indexOf(c), value: Math.max(1, c.value) })),
+    ]
+    return { nodes, links }
+  }, [rangeTx, categories, accounts, conv, cats])
 
   const avgMonthly = series.length ? rangeTotals.expense / series.length : 0
   const biggestMonth = series.reduce((a, b) => (b.expense > a.expense ? b : a), series[0]!)
@@ -282,6 +300,18 @@ export function Analytics() {
             </ResponsiveContainer>
           </div>
         </Card>
+
+        {flow && (
+          <Card className="col-12" title="Cash flow" sub={`Where the money came from and where it went (last ${n} months)`}>
+            <div style={{ height: 280 }}>
+              <ResponsiveContainer>
+                <Sankey data={flow} nodePadding={16} nodeWidth={12} link={{ stroke: '#3a3c4c' }} margin={{ left: 6, right: 90, top: 6, bottom: 6 }}>
+                  <Tooltip content={<ChartTooltip />} />
+                </Sankey>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        )}
 
         <Card className="col-12" title="Spending heat-map" sub="Last 12 months, one square per day">
           <div className="heat-grid">

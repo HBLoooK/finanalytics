@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Database, Download, HardDriveDownload, Pencil, Plus, RotateCcw, Terminal, Trash2, Upload } from 'lucide-react'
+import { BellRing, Database, Download, HardDriveDownload, Lock, Pencil, Plus, Receipt, RefreshCw, RotateCcw, Terminal, Trash2, Upload } from 'lucide-react'
 import { exportData, useStore } from '../store'
 import type { AppData, Category } from '../lib/types'
 import { CATEGORY_COLORS, ICONS } from '../lib/seed'
@@ -8,6 +8,8 @@ import { fetchDbStatus, requestBackup, restoreBackup, restoreUpload, runQuery, u
 import { Card, Modal } from '../components/ui'
 import { useToast } from '../components/Toasts'
 import { suggestAliases } from '../lib/matching'
+import { requestNotificationPermission } from '../lib/notifications'
+import { hasLockCode, setLockCode } from '../lib/lock'
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'MAD', 'CAD', 'AUD', 'CHF', 'JPY', 'INR', 'BRL', 'MXN', 'SEK', 'NOK', 'PLN', 'CZK', 'TRY', 'ZAR', 'SGD', 'AED', 'SAR', 'EGP', 'CNY', 'KRW']
 
@@ -16,6 +18,7 @@ export function SettingsPage() {
   const [editing, setEditing] = useState<Category | 'new' | null>(null)
   const [tab, setTab] = useState<'general' | 'data' | 'categories' | 'advanced'>('general')
   const [newCur, setNewCur] = useState('')
+  const [fetching, setFetching] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const dbFileRef = useRef<HTMLInputElement>(null)
   const sync = useSync()
@@ -134,6 +137,53 @@ export function SettingsPage() {
                 <input type="checkbox" checked={settings.hideArchived !== false} onChange={(e) => updateSettings({ hideArchived: e.target.checked })} />
                 Hide archived accounts from totals and pickers
               </label>
+              <div className="field full">
+                <label>Security & alerts</label>
+                <div className="flex wrap" style={{ gap: 8 }}>
+                  <button
+                    className="btn sm"
+                    onClick={async () => {
+                      const p = await requestNotificationPermission()
+                      if (p === 'granted') {
+                        updateSettings({ pushEnabled: true })
+                        toast('Desktop notifications enabled')
+                      } else if (p === 'unsupported') toast('This browser does not support notifications')
+                      else toast('Notification permission denied')
+                    }}
+                  >
+                    <BellRing size={13} /> {settings.pushEnabled ? 'Notifications on' : 'Enable notifications'}
+                  </button>
+                  <button
+                    className="btn sm ghost"
+                    disabled={settings.pushEnabled === false}
+                    onClick={() => updateSettings({ pushEnabled: false })}
+                  >
+                    Turn off
+                  </button>
+                  <button
+                    className="btn sm"
+                    onClick={() => {
+                      const current = hasLockCode()
+                      if (current && !window.confirm('Remove the passcode lock?')) return
+                      const code = current ? '' : (window.prompt('Choose a passcode (4+ characters)') ?? '')
+                      if (!current && code.length < 4) return
+                      setLockCode(code)
+                      toast(current ? 'Lock removed' : 'Lock enabled')
+                    }}
+                  >
+                    <Lock size={13} /> {hasLockCode() ? 'Change passcode' : 'Set passcode'}
+                  </button>
+                  <select className="select" style={{ width: 'auto', padding: '6px 10px' }} value={settings.autoLockMinutes ?? 0} onChange={(e) => updateSettings({ autoLockMinutes: Number(e.target.value) })}>
+                    <option value={0}>Never lock</option>
+                    <option value={5}>Lock after 5 min</option>
+                    <option value={15}>Lock after 15 min</option>
+                    <option value={60}>Lock after 1 hour</option>
+                  </select>
+                </div>
+                <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+                  The lock is a privacy screen, not encryption — the database file itself stays readable.
+                </div>
+              </div>
             </div>
             <div className="muted" style={{ fontSize: 12, marginTop: 16 }}>
               Shortcuts: <kbd>N</kbd> new · <kbd>⌘K</kbd> command palette · <kbd>/</kbd> search · <kbd>Esc</kbd> close
@@ -195,8 +245,32 @@ export function SettingsPage() {
                   <Plus size={13} /> Add
                 </button>
               </div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                Rates are manual — nothing leaves your machine. Last updated {fmtWhen(settings.ratesUpdatedAt ?? null)}.
+              <div className="flex wrap" style={{ gap: 8, marginTop: 6 }}>
+                <button
+                  className="btn sm"
+                  disabled={fetching}
+                  onClick={async () => {
+                    setFetching(true)
+                    try {
+                      const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=${settings.currency}`)
+                      if (!res.ok) throw new Error('unavailable')
+                      const j = (await res.json()) as { rates: Record<string, number> }
+                      const next: Record<string, number> = { ...settings.rates, [settings.currency]: 1 }
+                      for (const [c, v] of Object.entries(j.rates)) if (c in next) next[c] = v
+                      updateSettings({ rates: next, ratesUpdatedAt: today() })
+                      toast('Rates updated from frankfurter.dev')
+                    } catch {
+                      toast('Could not fetch rates — check your connection and set them manually')
+                    } finally {
+                      setFetching(false)
+                    }
+                  }}
+                >
+                  <RefreshCw size={13} /> {fetching ? 'Fetching…' : 'Fetch latest rates'}
+                </button>
+                <div className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>
+                  Optional: one HTTPS request to frankfurter.dev (no key, no data sent). Last updated {fmtWhen(settings.ratesUpdatedAt ?? null)}.
+                </div>
               </div>
             </div>
           </Card>
@@ -424,6 +498,15 @@ export function SettingsPage() {
                             </div>
                           </div>
                           <div className="flex" style={{ gap: 4 }}>
+                            <button
+                              className={`mini-btn ${c.taxDeductible ? '' : 'muted'}`}
+                              title="Mark as tax deductible (included in the Reports export)"
+                              aria-label="Tax deductible"
+                              onClick={() => updateCategory(c.id, { taxDeductible: !c.taxDeductible })}
+                              style={{ color: c.taxDeductible ? 'var(--green)' : undefined }}
+                            >
+                              <Receipt size={13} />
+                            </button>
                             <button className="mini-btn" onClick={() => setEditing(c)} aria-label="Edit">
                               <Pencil size={13} />
                             </button>
@@ -635,6 +718,7 @@ function CategoryModal({ initial, onClose, onSave }: { initial: Category | null;
   const [kind, setKind] = useState<Category['kind']>(initial?.kind ?? 'expense')
   const [icon, setIcon] = useState(initial?.icon ?? ICONS[0]!)
   const [color, setColor] = useState(initial?.color ?? CATEGORY_COLORS[0]!)
+  const [taxDeductible, setTaxDeductible] = useState(initial?.taxDeductible ?? false)
   return (
     <Modal title={initial ? 'Edit category' : 'New category'} onClose={onClose}>
       <form
@@ -642,7 +726,7 @@ function CategoryModal({ initial, onClose, onSave }: { initial: Category | null;
         style={{ gap: 14 }}
         onSubmit={(e) => {
           e.preventDefault()
-          if (name.trim()) onSave({ name: name.trim(), kind, icon, color, parentId: initial?.parentId ?? null })
+          if (name.trim()) onSave({ name: name.trim(), kind, icon, color, parentId: initial?.parentId ?? null, taxDeductible: taxDeductible })
         }}
       >
         <div className="form-grid">
@@ -681,6 +765,10 @@ function CategoryModal({ initial, onClose, onSave }: { initial: Category | null;
               ))}
             </div>
           </div>
+          <label className="check full">
+            <input type="checkbox" checked={taxDeductible} onChange={(e) => setTaxDeductible(e.target.checked)} />
+            Tax deductible (shown separately on reports and in the CSV export)
+          </label>
         </div>
         <div className="modal-actions">
           <button type="button" className="btn ghost" onClick={onClose}>

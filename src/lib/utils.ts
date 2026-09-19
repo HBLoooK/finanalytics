@@ -43,8 +43,9 @@ export const periodKey = (s: string, startDay = 1) => {
 /** First and last calendar date of an accounting period. */
 export const periodRange = (key: string, startDay = 1) => {
   const [y, m] = key.split('-').map(Number)
-  const start = new Date(y!, m! - 1, startDay)
-  const end = new Date(y!, m!, startDay - 1)
+  // Period "YYYY-MM" runs from startDay of the previous month to startDay-1 of this month.
+  const start = new Date(y!, m! - 2, startDay)
+  const end = new Date(y!, m! - 1, startDay - 1)
   return { from: toISODate(start), to: toISODate(end) }
 }
 

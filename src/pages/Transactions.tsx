@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Download, Pencil, Plus, Search, Star, Trash2, X } from 'lucide-react'
 import { useConverter, useStore } from '../store'
 import type { Transaction, TxType } from '../lib/types'
@@ -50,6 +50,31 @@ export function Transactions({ search }: { search: string }) {
   const income = sum(filtered.filter((t) => t.type === 'income').map((t) => txBase(t, accounts, conv)))
   const expense = sum(filtered.filter((t) => t.type === 'expense').map((t) => txBase(t, accounts, conv)))
   const savedViews = settings.savedViews ?? []
+
+  /** Keyboard navigation: J/K move, Enter edits, X selects, Delete removes. */
+  const [cursor, setCursor] = useState(-1)
+  useEffect(() => setCursor(-1), [search, type, cat, acc, month, tag])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        setCursor((c) => Math.min(shown.length - 1, c + 1))
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        setCursor((c) => Math.max(0, c - 1))
+      } else if (e.key === 'Enter' && cursor >= 0 && shown[cursor]) {
+        e.preventDefault()
+        setEditing(shown[cursor]!)
+      } else if (e.key === 'x' && cursor >= 0 && shown[cursor]) {
+        e.preventDefault()
+        toggle(shown[cursor]!.id)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cursor, shown])
 
   const exportCsv = () => {
     const rows = [
@@ -306,9 +331,10 @@ export function Transactions({ search }: { search: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(groups).map(([date, rows]) => (
+                  {Object.entries(groups).map(([date, rows], gi) => (
                     <GroupRows
                       key={date}
+                      startIndex={Object.entries(groups).slice(0, gi).reduce((n, [, r]) => n + r.length, 0)}
                       date={date}
                       rows={rows}
                       selected={selected}
@@ -316,6 +342,8 @@ export function Transactions({ search }: { search: string }) {
                       onEdit={setEditing}
                       onDelete={(t) => confirmDelete(`“${t.payee}”`) && deleteTransaction(t.id)}
                       locale={settings.locale}
+                      cursorIndex={cursor}
+                      onCursor={setCursor}
                     />
                   ))}
                 </tbody>
@@ -405,7 +433,11 @@ function GroupRows({
   onEdit,
   onDelete,
   locale,
+  cursorIndex,
+  onCursor,
+  startIndex,
 }: {
+  startIndex: number
   date: string
   rows: Transaction[]
   selected: Set<string>
@@ -413,6 +445,8 @@ function GroupRows({
   onEdit: (t: Transaction) => void
   onDelete: (t: Transaction) => void
   locale: string
+  cursorIndex: number
+  onCursor: (i: number) => void
 }) {
   const { categories, accounts } = useStore()
   const conv = useConverter()
@@ -427,13 +461,18 @@ function GroupRows({
           </span>
         </td>
       </tr>
-      {rows.map((t) => {
+      {rows.map((t, ri) => {
+        const shownIndex = startIndex + ri
         const c = categories.find((x) => x.id === t.categoryId)
         const a = accounts.find((x) => x.id === t.accountId)
         const to = accounts.find((x) => x.id === t.toAccountId)
         const isTransfer = t.type === 'transfer'
         return (
-          <tr key={t.id} className={selected.has(t.id) ? 'selected' : ''}>
+          <tr
+            key={t.id}
+            className={`${selected.has(t.id) ? 'selected' : ''} ${shownIndex === cursorIndex ? 'cursor' : ''}`.trim()}
+            onMouseEnter={() => onCursor(shownIndex)}
+          >
             <td>
               <input type="checkbox" checked={selected.has(t.id)} onChange={() => onToggle(t.id)} style={{ accentColor: 'var(--primary)' }} />
             </td>

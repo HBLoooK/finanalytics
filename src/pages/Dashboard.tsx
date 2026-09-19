@@ -9,6 +9,7 @@ import { cashFlowForecast, safeToSpend } from '../lib/forecast'
 import { Card, ChartTooltip, Gauge, Legend, Money, Empty, axisProps, useCountUp, useMoney } from '../components/ui'
 import { BankCard } from './Wallet'
 import { DrillDown, type DrillFilter } from '../components/DrillDown'
+import { WeekDigest } from '../components/WeekDigest'
 
 const P = '#6270f2'
 const M = '#e05be0'
@@ -162,6 +163,10 @@ export function Dashboard() {
           </div>
         </Card>
       )}
+
+      <Card className="col-12" title="This week so far" sub="Your automated Monday digest, available any day">
+        <WeekDigest />
+      </Card>
 
       {/* ---- LEFT COLUMN ---- */}
       <div className="col-7 grid" style={{ gridTemplateColumns: '1fr 1fr', alignContent: 'start' }}>

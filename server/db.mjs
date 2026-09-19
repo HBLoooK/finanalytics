@@ -202,7 +202,8 @@ export function openDatabase(path) {
   const backup = (keep = 14) => {
     mkdirSync(backupDir, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    const file = join(backupDir, `finanalytics-${stamp}.db`)
+    const uniq = process.hrtime.bigint().toString(36).slice(-4)
+    const file = join(backupDir, `finanalytics-${stamp}-${uniq}.db`)
     if (existsSync(file)) unlinkSync(file)
     db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`)
     // Verify the snapshot before trusting it.
@@ -274,6 +275,9 @@ export function openDatabase(path) {
   const restoreFrom = (file) => {
     const problem = checkIntegrity(file)
     if (problem) throw Object.assign(new Error(`cannot restore: ${problem}`), { status: 400 })
+    // Copy the source first: the pre-restore snapshot below must not overwrite it.
+    const tmp = `${path}.restore-tmp`
+    copyFileSync(file, tmp)
     let pre = null
     try {
       pre = backup()
@@ -281,8 +285,6 @@ export function openDatabase(path) {
       /* if backups are broken, still allow restore but flag it */
     }
     db.close()
-    const tmp = `${path}.restore-tmp`
-    copyFileSync(file, tmp)
     renameSync(tmp, path)
     for (const suffix of ['-wal', '-shm']) {
       try {

@@ -5,7 +5,7 @@ import { useStore } from '../store'
 import { CARD_STYLES } from '../lib/seed'
 import { today } from '../lib/utils'
 
-const CURRENCIES = ['USD', 'EUR', 'GBP', 'MAD', 'CAD', 'AUD', 'CHF', 'JPY', 'GBP', 'AED', 'SAR']
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'MAD', 'CAD', 'AUD', 'CHF', 'JPY', 'AED', 'SAR']
 const BASE_RATES: Record<string, number> = { USD: 1, EUR: 0.92, GBP: 0.78, MAD: 9.9, CAD: 1.36, AUD: 1.52, CHF: 0.88, JPY: 149, AED: 3.67, SAR: 3.75, INR: 83, BRL: 5.1, SEK: 10.4 }
 
 export function Onboarding({ onDone }: { onDone: () => void }) {

@@ -30,33 +30,35 @@ function Splash() {
   )
 }
 
-/** Keeps ?q= and ?m= query params available to pages that want them. */
-function useQuery() {
+/**
+ * Deep links, evaluated once: #/transactions?q=… prefills the search box and
+ * #/?quick=1 (the PWA "Add expense" shortcut) opens the quick-add sheet.
+ * Must live inside the router — it uses location and navigation.
+ */
+function DeepLinks({ onSearch }: { onSearch: (s: string) => void }) {
   const loc = useLocation()
-  return new URLSearchParams(loc.search)
+  const navigate = useNavigate()
+  useEffect(() => {
+    const params = new URLSearchParams(loc.search)
+    const q = params.get('q')
+    if (q) onSearch(q)
+    if (params.get('quick')) {
+      document.querySelector<HTMLButtonElement>('.mobile-fab')?.click()
+      navigate('/', { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return null
 }
 
 function App() {
   const [search, setSearch] = useState('')
   const [hydrated, setHydrated] = useState(useStore.persist.hasHydrated())
   const onboarded = useStore((s) => s.settings.onboarded)
-  const query = useQuery()
-  const navigate = useNavigate()
 
   useEffect(() => {
     if (useStore.persist.hasHydrated()) setHydrated(true)
     return useStore.persist.onFinishHydration(() => setHydrated(true))
-  }, [])
-
-  // Deep links: #/transactions?q=...  and  #/?quick=1 (PWA shortcut)
-  useEffect(() => {
-    const q = query.get('q')
-    if (q) setSearch(q)
-    if (query.get('quick')) {
-      document.querySelector<HTMLButtonElement>('.mobile-fab')?.click()
-      navigate('/', { replace: true })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   if (!hydrated) return <Splash />
@@ -64,6 +66,7 @@ function App() {
   return (
     <>
       <HashRouter>
+        <DeepLinks onSearch={setSearch} />
         <Layout search={search} onSearch={setSearch}>
           <Routes>
             <Route path="/" element={search ? <Transactions search={search} /> : <Dashboard />} />

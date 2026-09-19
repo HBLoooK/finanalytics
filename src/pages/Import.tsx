@@ -1,33 +1,101 @@
 import { useMemo, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle2, FileUp, Pencil, Plus, Trash2, Wand2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FileUp, Pencil, Plus, RotateCcw, Trash2, Wand2 } from 'lucide-react'
 import { useStore } from '../store'
 import type { Rule, Transaction } from '../lib/types'
-import { guessColumns, parseAmountLoose, parseCSV, parseDateLoose, type ColumnMap } from '../lib/csv'
-import { applyRules } from '../lib/rules'
-import { hashString, parseTags } from '../lib/utils'
+import { guessColumns, parseAmountLoose, parseCSV, parseDateLoose, parseOFX, parseQIF, type ColumnMap } from '../lib/csv'
+import { applyRules, describeRule } from '../lib/rules'
+import { hashString, parseTags, uid } from '../lib/utils'
 import { Card, Empty, Modal, Money, Tabs, confirmDelete } from '../components/ui'
+import { useToast } from '../components/Toasts'
+
+/** Remembered column mapping per bank, keyed by the header signature. */
+const PRESET_KEY = 'finanalytics:import-presets'
+type Presets = Record<string, ColumnMap & { dayFirst?: boolean; invert?: boolean }>
+const loadPresets = (): Presets => {
+  try {
+    return JSON.parse(localStorage.getItem(PRESET_KEY) ?? '{}') as Presets
+  } catch {
+    return {}
+  }
+}
+const savePresets = (p: Presets) => localStorage.setItem(PRESET_KEY, JSON.stringify(p))
 
 type Row = Omit<Transaction, 'id'> & { key: string; duplicate: boolean; include: boolean; ruleName: string | null; raw: string[] }
 
 export function ImportPage() {
-  const [tab, setTab] = useState<'import' | 'rules'>('import')
+  const [tab, setTab] = useState<'import' | 'rules' | 'history'>('import')
   return (
     <div className="stack" style={{ gap: 16 }}>
       <Tabs
         value={tab}
         onChange={setTab}
         options={[
-          { value: 'import', label: 'Import CSV' },
+          { value: 'import', label: 'Import statement' },
+          { value: 'history', label: 'Import history' },
           { value: 'rules', label: 'Categorisation rules' },
         ]}
       />
-      {tab === 'import' ? <CsvImport /> : <RulesPage />}
+      {tab === 'import' ? <CsvImport /> : tab === 'history' ? <ImportHistory /> : <RulesPage />}
     </div>
+  )
+}
+
+/** Every import is tagged with a batch id so it can be undone as a group. */
+function ImportHistory() {
+  const { transactions, deleteTransactions } = useStore()
+  const toast = useToast()
+  const batches = useMemo(() => {
+    const map = new Map<string, { id: string; date: string; count: number; total: number; accountId: string }>()
+    for (const t of transactions) {
+      if (!t.importBatchId) continue
+      const b = map.get(t.importBatchId) ?? { id: t.importBatchId, date: t.date, count: 0, total: 0, accountId: t.accountId }
+      b.count++
+      b.total += t.amount
+      if (t.date > b.date) b.date = t.date
+      map.set(t.importBatchId, b)
+    }
+    return [...map.values()].sort((a, b) => (a.date < b.date ? 1 : -1))
+  }, [transactions])
+
+  if (!batches.length)
+    return (
+      <Card>
+        <Empty title="No imports yet" hint="Anything you import is grouped here so you can roll it back in one click." />
+      </Card>
+    )
+
+  return (
+    <Card title="Import batches" sub="Roll back an import without touching anything else">
+      <div className="stack" style={{ gap: 8 }}>
+        {batches.map((b) => (
+          <div key={b.id} className="flex between subtle-panel" style={{ padding: '10px 12px', fontSize: 13 }}>
+            <span>
+              <b>{b.count} transactions</b>{' '}
+              <span className="muted">
+                · imported {b.date} · {b.id.slice(0, 8)}
+              </span>
+            </span>
+            <button
+              className="btn danger sm"
+              onClick={() => {
+                if (!confirmDelete(`these ${b.count} imported transactions`)) return
+                const ids = transactions.filter((t) => t.importBatchId === b.id).map((t) => t.id)
+                deleteTransactions(ids)
+                toast(`Rolled back ${ids.length} transactions — undo available`)
+              }}
+            >
+              <RotateCcw size={13} /> Roll back
+            </button>
+          </div>
+        ))}
+      </div>
+    </Card>
   )
 }
 
 function CsvImport() {
   const { accounts, categories, rules, transactions, addTransactions } = useStore()
+  const toast = useToast()
   const [file, setFile] = useState<{ name: string; rows: string[][] } | null>(null)
   const [hasHeader, setHasHeader] = useState(true)
   const [map, setMap] = useState<ColumnMap | null>(null)
@@ -43,9 +111,35 @@ function CsvImport() {
 
   const load = async (f: File) => {
     const text = await f.text()
+    const lower = f.name.toLowerCase()
+    if (lower.endsWith('.ofx') || lower.endsWith('.qfx') || text.includes('<OFX>')) {
+      const parsed = parseOFX(text)
+      const rows = [['date', 'payee', 'amount', 'note'], ...parsed.map((r) => [r.date, r.payee, String(r.amount), r.note])]
+      setFile({ name: f.name, rows })
+      setMap({ date: 0, payee: 1, amount: 2, credit: -1, note: 3, category: -1 })
+      setDone(null)
+      setOverrides({})
+      return
+    }
+    if (lower.endsWith('.qif')) {
+      const parsed = parseQIF(text)
+      const rows = [['date', 'payee', 'amount', 'note'], ...parsed.map((r) => [r.date, r.payee, String(r.amount), r.note])]
+      setFile({ name: f.name, rows })
+      setMap({ date: 0, payee: 1, amount: 2, credit: -1, note: 3, category: -1 })
+      setDone(null)
+      setOverrides({})
+      return
+    }
     const rows = parseCSV(text)
     setFile({ name: f.name, rows })
-    setMap(guessColumns(rows[0] ?? []))
+    const signature = hashString((rows[0] ?? []).join('|').toLowerCase())
+    const preset = loadPresets()[signature]
+    if (preset) {
+      setMap({ date: preset.date, payee: preset.payee, amount: preset.amount, credit: preset.credit, note: preset.note, category: preset.category })
+      if (preset.dayFirst !== undefined) setDayFirst(preset.dayFirst)
+      if (preset.invert !== undefined) setInvert(preset.invert)
+      toast('Reusing the column mapping from the last import of this file')
+    } else setMap(guessColumns(rows[0] ?? []))
     setDone(null)
     setOverrides({})
   }
@@ -112,6 +206,7 @@ function CsvImport() {
   const setOverride = (key: string, patch: Partial<Row>) => setOverrides((o) => ({ ...o, [key]: { ...o[key], ...patch } }))
 
   const commit = () => {
+    const batchId = uid()
     addTransactions(
       included.map((r) => {
         // strip UI-only fields
@@ -121,9 +216,15 @@ function CsvImport() {
         void _i
         void _r
         void _raw
-        return tx
+        return { ...tx, importBatchId: batchId }
       }),
     )
+    // Remember this file's column mapping for next time.
+    if (file && map) {
+      const presets = loadPresets()
+      presets[hashString((file.rows[0] ?? []).join('|').toLowerCase())] = { ...map, dayFirst, invert }
+      savePresets(presets)
+    }
     setDone(included.length)
     setFile(null)
     setMap(null)
@@ -145,10 +246,10 @@ function CsvImport() {
 
   return (
     <div className="grid dash-grid">
-      <Card className="col-12" title="1. Choose a file" sub="Export a CSV from your bank. Columns are detected automatically and can be re-mapped below.">
+      <Card className="col-12" title="1. Choose a file" sub="CSV, OFX/QFX or QIF. Columns are detected automatically; the mapping is remembered per bank.">
         {done !== null && (
           <div className="subtle-panel flex" style={{ marginBottom: 12, color: 'var(--green)' }}>
-            <CheckCircle2 size={16} /> Imported {done} transactions. They're tagged <span className="tag">#imported</span> so you can find them.
+            <CheckCircle2 size={16} /> Imported {done} transactions. They're tagged <span className="tag">#imported</span> and grouped as one batch — roll it back on the Import history tab.
           </div>
         )}
         <div
@@ -169,7 +270,7 @@ function CsvImport() {
           <FileUp size={26} style={{ marginBottom: 8 }} />
           <div style={{ fontWeight: 600, color: 'var(--text)' }}>{file ? file.name : 'Drop a CSV here or click to browse'}</div>
           <div style={{ fontSize: 12 }}>{file ? `${dataRows.length} rows detected` : 'Comma, semicolon or tab separated'}</div>
-          <input ref={inputRef} type="file" accept=".csv,text/csv,text/plain" hidden onChange={(e) => e.target.files?.[0] && load(e.target.files[0])} />
+          <input ref={inputRef} type="file" accept=".csv,.tsv,.txt,.ofx,.qfx,.qif,text/csv,text/plain" hidden onChange={(e) => e.target.files?.[0] && load(e.target.files[0])} />
         </div>
       </Card>
 
@@ -355,15 +456,14 @@ export function RulesPage() {
             <tbody>
               {rules.map((r, i) => {
                 const c = categories.find((x) => x.id === r.categoryId)
+                void i
                 return (
                   <tr key={r.id} style={{ opacity: r.enabled ? 1 : 0.5 }}>
                     <td>
                       <input type="checkbox" checked={r.enabled} onChange={(e) => updateRule(r.id, { enabled: e.target.checked })} style={{ accentColor: 'var(--primary)' }} />
                     </td>
                     <td style={{ fontWeight: 600 }}>{r.name}</td>
-                    <td className="muted">
-                      {r.field} {r.match} <code style={{ color: 'var(--text)' }}>{r.pattern}</code>
-                    </td>
+                    <td className="muted">{describeRule(r)}</td>
                     <td>
                       <div className="flex wrap" style={{ gap: 4 }}>
                         {c && (
@@ -431,14 +531,16 @@ function reorder(rules: Rule[], i: number, dir: -1 | 1, update: (id: string, p: 
 
 function RuleModal({ initial, onClose, onSave }: { initial: Rule | null; onClose: () => void; onSave: (r: Omit<Rule, 'id'>) => void }) {
   const { categories, transactions } = useStore()
+  const { accounts } = useStore()
   const [name, setName] = useState(initial?.name ?? '')
   const [field, setField] = useState<Rule['field']>(initial?.field ?? 'payee')
   const [match, setMatch] = useState<Rule['match']>(initial?.match ?? 'contains')
   const [pattern, setPattern] = useState(initial?.pattern ?? '')
+  const [pattern2, setPattern2] = useState(initial?.pattern2 ?? '')
   const [categoryId, setCategoryId] = useState(initial?.categoryId ?? '')
   const [tags, setTags] = useState((initial?.tags ?? []).join(', '))
   const [renameTo, setRenameTo] = useState(initial?.renameTo ?? '')
-  const test: Rule = { id: 'x', name, field, match, pattern, categoryId: categoryId || null, tags: parseTags(tags), renameTo, enabled: true }
+  const test: Rule = { id: 'x', name, field, match, pattern, pattern2, categoryId: categoryId || null, tags: parseTags(tags), renameTo, enabled: true }
   const matches = pattern ? transactions.filter((t) => t.type !== 'transfer' && applyRules([test], t).rule).length : 0
 
   return (
@@ -449,7 +551,7 @@ function RuleModal({ initial, onClose, onSave }: { initial: Rule | null; onClose
         onSubmit={(e) => {
           e.preventDefault()
           if (!pattern.trim()) return
-          onSave({ name: name.trim() || pattern, field, match, pattern: pattern.trim(), categoryId: categoryId || null, tags: parseTags(tags), renameTo: renameTo.trim(), enabled: initial?.enabled ?? true })
+          onSave({ name: name.trim() || pattern, field, match, pattern: pattern.trim(), pattern2: pattern2.trim(), categoryId: categoryId || null, tags: parseTags(tags), renameTo: renameTo.trim(), enabled: initial?.enabled ?? true })
         }}
       >
         <div className="form-grid">
@@ -463,23 +565,73 @@ function RuleModal({ initial, onClose, onSave }: { initial: Rule | null; onClose
               <option value="payee">Payee</option>
               <option value="note">Note</option>
               <option value="any">Payee or note</option>
+              <option value="amount">Amount</option>
+              <option value="account">Account</option>
+              <option value="weekday">Weekday</option>
             </select>
           </div>
           <div className="field">
             <label>Condition</label>
             <select className="select" value={match} onChange={(e) => setMatch(e.target.value as Rule['match'])}>
-              <option value="contains">contains</option>
-              <option value="starts">starts with</option>
-              <option value="equals">equals</option>
-              <option value="regex">matches regex</option>
+              {(field === 'amount'
+                ? [
+                    { value: 'between', label: 'is between' },
+                    { value: 'equals', label: 'equals' },
+                    { value: 'starts', label: 'is at least' },
+                  ]
+                : field === 'account'
+                  ? [
+                      { value: 'is', label: 'is' },
+                      { value: 'starts', label: 'is not' },
+                    ]
+                  : field === 'weekday'
+                    ? [{ value: 'contains', label: 'is one of' }]
+                    : [
+                        { value: 'contains', label: 'contains' },
+                        { value: 'starts', label: 'starts with' },
+                        { value: 'equals', label: 'equals' },
+                        { value: 'regex', label: 'matches regex' },
+                      ]
+              ).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
             </select>
           </div>
-          <div className="field full">
-            <label>Pattern</label>
-            <input className="input" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder={match === 'regex' ? 'netflix|spotify|hulu' : 'netflix'} />
-            <span className="muted" style={{ fontSize: 11.5 }}>
-              Matches {matches} existing transaction{matches === 1 ? '' : 's'}
-            </span>
+          {field === 'amount' && match === 'between' ? (
+            <div className="field full">
+              <label>Amount between</label>
+              <div className="flex">
+                <input className="input" type="number" step="0.01" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="min" />
+                <input className="input" type="number" step="0.01" value={pattern2} onChange={(e) => setPattern2(e.target.value)} placeholder="max" />
+              </div>
+            </div>
+          ) : field === 'account' ? (
+            <div className="field full">
+              <label>Account</label>
+              <select className="select" value={pattern} onChange={(e) => setPattern(e.target.value)}>
+                <option value="">— choose —</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : field === 'weekday' ? (
+            <div className="field full">
+              <label>Weekdays (comma separated)</label>
+              <input className="input" value={pattern2} onChange={(e) => setPattern2(e.target.value)} placeholder="monday, saturday" />
+            </div>
+          ) : (
+            <div className="field full">
+              <label>Pattern</label>
+              <input className="input" value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder={match === 'regex' ? 'netflix|spotify|hulu' : 'netflix'} />
+            </div>
+          )}
+          <div className="muted" style={{ fontSize: 11.5, marginTop: -6 }}>
+            Matches {matches} existing transaction{matches === 1 ? '' : 's'} · rules run top to bottom, first match wins
           </div>
           <div className="field">
             <label>Set category</label>

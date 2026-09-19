@@ -1,19 +1,54 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Download, Printer } from 'lucide-react'
 import { useConverter, useStore } from '../store'
-import { accountBalance, budgetProgress, byCategory, byTag, inMonth, netWorth, topPayees, totals, txBase } from '../lib/analytics'
-import { addMonths, csvEscape, downloadFile, monthKey, monthLabel, today } from '../lib/utils'
-import { Card, Money, useMoney } from '../components/ui'
+import { accountBalance, budgetProgress, byCategory, byTag, netWorth, topPayees, totals, txBase } from '../lib/analytics'
+import { addMonths, csvEscape, downloadFile, lastNMonths, monthKey, monthLabel, today } from '../lib/utils'
+import { Card, Money, Segmented, useMoney } from '../components/ui'
+
+type Scope = 'month' | 'quarter' | 'year' | 'custom'
 
 export function Reports() {
   const { transactions, categories, accounts, budgets, holdings, debts, settings, recurring } = useStore()
   const conv = useConverter()
   const money = useMoney()
-  const [month, setMonth] = useState(monthKey(today()))
-  const prevKey = addMonths(month, -1)
+  const [params] = useSearchParams()
+  const [scope, setScope] = useState<Scope>('month')
+  const [month, setMonth] = useState(params.get('m') ?? monthKey(today()))
+  const [customFrom, setCustomFrom] = useState(addMonths(monthKey(today()), -2) + '-01')
+  const [customTo, setCustomTo] = useState(today())
 
-  const txs = useMemo(() => inMonth(transactions, month), [transactions, month])
-  const prevTxs = useMemo(() => inMonth(transactions, prevKey), [transactions, prevKey])
+  const range = useMemo(() => {
+    if (scope === 'month') return { from: `${month}-01`, to: `${month}-31`, label: monthLabel(month, false) }
+    if (scope === 'quarter') {
+      const keys = lastNMonths(3, month)
+      return { from: `${keys[0]}-01`, to: `${keys[2]}-31`, label: `${monthLabel(keys[0]!)} – ${monthLabel(keys[2]!, false)}` }
+    }
+    if (scope === 'year') {
+      const y = month.slice(0, 4)
+      return { from: `${y}-01-01`, to: `${y}-12-31`, label: y }
+    }
+    return { from: customFrom, to: customTo, label: `${customFrom} → ${customTo}` }
+  }, [scope, month, customFrom, customTo])
+
+  const prevKey = scope === 'month' ? addMonths(month, -1) : addMonths(month, scope === 'quarter' ? -3 : -12)
+  const inRange = (list: typeof transactions) => list.filter((t) => t.date >= range.from && t.date <= range.to)
+  const prevRange = useMemo(() => {
+    if (scope === 'month') return { from: `${prevKey}-01`, to: `${prevKey}-31` }
+    if (scope === 'quarter') {
+      const keys = lastNMonths(3, prevKey)
+      return { from: `${keys[0]}-01`, to: `${keys[2]}-31` }
+    }
+    if (scope === 'year') {
+      const y = String(Number(month.slice(0, 4)) - 1)
+      return { from: `${y}-01-01`, to: `${y}-12-31` }
+    }
+    const days = Math.round((Date.parse(customTo) - Date.parse(customFrom)) / 86400000) + 1
+    return { from: new Date(Date.parse(customFrom) - days * 86400000).toISOString().slice(0, 10), to: new Date(Date.parse(customFrom) - 86400000).toISOString().slice(0, 10) }
+  }, [scope, month, prevKey, customFrom, customTo])
+
+  const txs = useMemo(() => inRange(transactions), [transactions, range])
+  const prevTxs = useMemo(() => transactions.filter((t) => t.date >= prevRange.from && t.date <= prevRange.to), [transactions, prevRange])
   const t = totals(txs, accounts, conv)
   const p = totals(prevTxs, accounts, conv)
   const cats = byCategory(txs, categories, accounts, conv)
@@ -21,9 +56,8 @@ export function Reports() {
   const incomeCats = byCategory(txs, categories, accounts, conv, 'income')
   const payees = topPayees(txs, accounts, conv, 8)
   const tags = byTag(txs, accounts, conv)
-  const bud = budgetProgress(budgets, transactions, categories, accounts, conv, month)
-  const endKey = month
-  const worthEnd = netWorth(accounts, transactions.filter((x) => monthKey(x.date) <= endKey), conv, holdings, debts)
+  const bud = budgetProgress(budgets, transactions, categories, accounts, conv, month, settings.monthStartDay)
+  const worthEnd = netWorth(accounts, transactions.filter((x) => x.date <= range.to), conv, holdings, debts)
   const worthStart = netWorth(accounts, transactions.filter((x) => monthKey(x.date) <= prevKey), conv, holdings, debts)
   const largest = txs
     .filter((x) => x.type === 'expense')
@@ -33,6 +67,10 @@ export function Reports() {
   const transfersOut = txs.filter((x) => x.type === 'transfer').reduce((s, x) => s + txBase(x, accounts, conv), 0)
   const fixed = recurring.filter((r) => r.active && r.type === 'expense').length
   const ch = (a: number, b: number) => (b ? ((a - b) / b) * 100 : 0)
+  const deductible = cats
+    .filter((c) => categories.find((x) => x.id === c.id)?.taxDeductible)
+    .reduce((s, c) => s + c.value, 0)
+  const periodDays = Math.max(1, Math.round((Date.parse(range.to) - Date.parse(range.from)) / 86400000) + 1)
 
   const exportCsv = () => {
     const rows = [
@@ -44,21 +82,41 @@ export function Reports() {
       ...cats.map((c) => ['category', c.name, c.value.toFixed(2), (prevCats.find((x) => x.id === c.id)?.value ?? 0).toFixed(2)]),
       ...payees.map((x) => ['payee', x.payee, x.total.toFixed(2), x.count]),
       ...bud.map((b) => ['budget', b.category!.name, b.spent.toFixed(2), b.limit]),
+      ['summary', 'tax_deductible', deductible.toFixed(2), ''],
     ]
-    downloadFile(`report-${month}.csv`, rows.map((r) => r.map(csvEscape).join(',')).join('\n'), 'text/csv')
+    downloadFile(`report-${range.from}_${range.to}.csv`, rows.map((r) => r.map(csvEscape).join(',')).join('\n'), 'text/csv')
   }
 
   return (
     <div className="stack" style={{ gap: 16 }}>
-      <div className="flex between wrap no-print">
-        <div className="flex">
-          <button className="icon-btn" onClick={() => setMonth((m) => addMonths(m, -1))}>
-            <ChevronLeft size={16} />
-          </button>
-          <b style={{ minWidth: 160, textAlign: 'center', fontSize: 15 }}>{monthLabel(month, false)}</b>
-          <button className="icon-btn" onClick={() => setMonth((m) => addMonths(m, 1))}>
-            <ChevronRight size={16} />
-          </button>
+      <div className="flex between wrap no-print" style={{ gap: 10 }}>
+        <div className="flex wrap" style={{ gap: 8 }}>
+          <Segmented
+            value={scope}
+            onChange={setScope}
+            options={[
+              { value: 'month', label: 'Month' },
+              { value: 'quarter', label: 'Quarter' },
+              { value: 'year', label: 'Year' },
+              { value: 'custom', label: 'Custom' },
+            ]}
+          />
+          {scope !== 'custom' ? (
+            <div className="flex">
+              <button className="icon-btn" onClick={() => setMonth((m) => addMonths(m, scope === 'year' ? -12 : scope === 'quarter' ? -3 : -1))}>
+                <ChevronLeft size={16} />
+              </button>
+              <b style={{ minWidth: 160, textAlign: 'center', fontSize: 15 }}>{range.label}</b>
+              <button className="icon-btn" onClick={() => setMonth((m) => addMonths(m, scope === 'year' ? 12 : scope === 'quarter' ? 3 : 1))}>
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          ) : (
+            <div className="flex">
+              <input className="input" type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} style={{ width: 'auto' }} />
+              <input className="input" type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} style={{ width: 'auto' }} />
+            </div>
+          )}
         </div>
         <div className="flex">
           <button className="btn" onClick={exportCsv}>
@@ -70,12 +128,27 @@ export function Reports() {
         </div>
       </div>
 
+      {deductible > 0 && (
+        <Card className="col-6" title="Tax-deductible spend" sub="Categories marked deductible in Settings">
+          <div style={{ fontSize: 22, fontWeight: 600 }}>
+            <Money value={deductible} />
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {((deductible / Math.max(1, t.expense)) * 100).toFixed(0)}% of this period's expenses
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div style={{ marginBottom: 14 }}>
           <div className="muted" style={{ fontSize: 12 }}>
-            Monthly report · {settings.name}
+            {scope === 'month' ? 'Monthly' : scope === 'quarter' ? 'Quarterly' : scope === 'year' ? 'Annual' : 'Custom'} report · {settings.name}
           </div>
-          <h2 style={{ margin: '2px 0 0', fontSize: 20 }}>{monthLabel(month, false)}</h2>
+          <h2 style={{ margin: '2px 0 0', fontSize: 20 }}>{range.label}</h2>
+          <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+            {txs.length} transactions · {periodDays} days · compared with the previous{' '}
+            {scope === 'month' ? 'month' : scope === 'quarter' ? 'quarter' : scope === 'year' ? 'year' : 'period'}
+          </div>
         </div>
         <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
           {[
@@ -96,7 +169,7 @@ export function Reports() {
                 <div style={{ fontSize: 11.5, color: good ? 'var(--green)' : 'var(--red)' }}>
                   {dd >= 0 ? '+' : ''}
                   {dd.toFixed(1)}
-                  {isPct ? ' pts' : '%'} vs {monthLabel(prevKey)}
+                  {isPct ? ' pts' : '%'} vs previous {scope === 'month' ? 'month' : scope === 'quarter' ? 'quarter' : 'year'}
                 </div>
               </div>
             )
@@ -176,9 +249,9 @@ export function Reports() {
           </Card>
         )}
 
-        <Card className="col-6" title="Account balances (end of month)">
+        <Card className="col-6" title="Account balances (end of period)">
           {accounts.map((a) => {
-            const bal = accountBalance(a, transactions.filter((x) => monthKey(x.date) <= month))
+            const bal = accountBalance(a, transactions.filter((x) => x.date <= range.to))
             return (
               <div key={a.id} className="flex between" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
                 <span>
