@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Download, Printer } from 'lucide-react'
 import { useConverter, useStore } from '../store'
@@ -9,6 +9,11 @@ import { Card, Money, Segmented, useMoney } from '../components/ui'
 type Scope = 'month' | 'quarter' | 'year' | 'custom'
 
 export function Reports() {
+  // Insight badges count the analysis you actually open.
+  useEffect(() => {
+    useStore.getState().bumpStat('reports')
+  }, [])
+
   const { transactions, categories, accounts, budgets, holdings, debts, settings, recurring } = useStore()
   const conv = useConverter()
   const money = useMoney()

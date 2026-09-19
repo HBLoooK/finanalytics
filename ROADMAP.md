@@ -1,5 +1,8 @@
 # Finanalytics — improvement plan
 
+> Most of this plan has shipped — see **[CHANGELOG.md](CHANGELOG.md) v1.1.0** for the user-facing summary
+> and the [status table at the bottom](#status--what-shipped-2026-09-19) for a per-item breakdown.
+
 Grounded in two code‑audit passes on 2026‑09‑19 (7.7k lines, 14 pages, SQLite backend).
 Effort: S = < ½ day, M = 1–2 days, L = 3+ days. Items marked **★** are the highest‑leverage ones in their phase.
 

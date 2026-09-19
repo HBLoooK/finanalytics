@@ -114,6 +114,7 @@ function CsvImport() {
     const lower = f.name.toLowerCase()
     if (lower.endsWith('.ofx') || lower.endsWith('.qfx') || text.includes('<OFX>')) {
       const parsed = parseOFX(text)
+      useStore.getState().bumpStat('ofxImports')
       const rows = [['date', 'payee', 'amount', 'note'], ...parsed.map((r) => [r.date, r.payee, String(r.amount), r.note])]
       setFile({ name: f.name, rows })
       setMap({ date: 0, payee: 1, amount: 2, credit: -1, note: 3, category: -1 })
@@ -123,6 +124,7 @@ function CsvImport() {
     }
     if (lower.endsWith('.qif')) {
       const parsed = parseQIF(text)
+      useStore.getState().bumpStat('ofxImports')
       const rows = [['date', 'payee', 'amount', 'note'], ...parsed.map((r) => [r.date, r.payee, String(r.amount), r.note])]
       setFile({ name: f.name, rows })
       setMap({ date: 0, payee: 1, amount: 2, credit: -1, note: 3, category: -1 })

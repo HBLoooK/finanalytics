@@ -163,6 +163,7 @@ export function DataHealth() {
                         const msg = i.fix!()
                         setLastFix(msg)
                         toast(msg)
+                        useStore.getState().recordEvent('health.fix')
                       }}
                     >
                       <Wand2 size={13} /> {i.fixLabel ?? 'Fix'}

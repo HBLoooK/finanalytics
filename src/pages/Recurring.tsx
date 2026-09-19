@@ -291,6 +291,7 @@ export function RecurringPage() {
                   onClick={() => {
                     updateTransaction(m.tx.id, { recurringId: m.rec.id })
                     if (m.tx.date >= m.rec.nextDate) updateRecurring(m.rec.id, { nextDate: nextOccurrence(m.rec.nextDate, m.rec.frequency) })
+                    useStore.getState().bumpStat('billsSettled')
                   }}
                 >
                   <Link2 size={13} /> Link
@@ -317,7 +318,8 @@ export function RecurringPage() {
                 </span>
                 <button
                   className="btn sm"
-                  onClick={() =>
+                  onClick={() => {
+                    useStore.getState().bumpStat('subscriptionActions')
                     addRecurring({
                       name: d.payee,
                       type: 'expense',
@@ -337,7 +339,7 @@ export function RecurringPage() {
                       variable: true,
                       autoMatch: true,
                     })
-                  }
+                  }}
                 >
                   <Sparkles size={13} /> Track it
                 </button>

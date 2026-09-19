@@ -221,6 +221,93 @@ export interface NotificationRecord {
   snoozedUntil: string | null
 }
 
+/* ---------- progression (XP, streaks, badges, quests, seasons) ---------- */
+
+/**
+ * Every action that can earn XP. Deliberately rewards the habits that make the
+ * numbers *correct* (logging, categorising, reconciling, reviewing) — never
+ * spending less, which would punish an honest month.
+ */
+export type XpEvent =
+  | 'tx.add'
+  | 'tx.transfer'
+  | 'tx.categorise'
+  | 'tx.split'
+  | 'tx.receipt'
+  | 'tx.import'
+  | 'health.fix'
+  | 'account.reconcile'
+  | 'bill.post'
+  | 'debt.pay'
+  | 'goal.contribute'
+  | 'holding.price'
+  | 'setup.budget'
+  | 'setup.rule'
+  | 'setup.recurring'
+  | 'checkin'
+  | 'review'
+  | 'quest'
+
+export interface StreakState {
+  current: number
+  longest: number
+  lastDay: string | null
+  /** Grace tokens earned by keeping the chain alive (one per 7 days, max 2). */
+  freezes: number
+}
+
+export interface Quest {
+  id: string
+  kind: 'daily' | 'weekly'
+  key: string
+  text: string
+  target: number
+  done: number
+  reward: number
+  created: string
+  expires: string
+  state: 'open' | 'done' | 'expired'
+  /** `'state'` means progress is recomputed live from the data instead of counted. */
+  track: XpEvent | 'state'
+}
+
+export interface SeasonRecord {
+  month: string
+  xp: number
+  metrics: Record<string, number>
+  best?: string
+}
+
+export interface Progress {
+  xp: number
+  /**
+   * `'YYYY-MM-DD'` → XP that day · `'YYYY-MM-DD#event'` → per-event that day ·
+   * `'once#event#key'` → 1, marks a one-shot award (never pruned).
+   */
+  xpLog: Record<string, number>
+  streak: StreakState
+  reviewStreak: StreakState
+  badges: Record<string, { at: string; tier: number }>
+  quests: Quest[]
+  questsGeneratedOn: string | null
+  seasons: SeasonRecord[]
+  coach: { lastShownAt: string | null; lastKey: string | null; dismissed: string[] }
+  stats: Record<string, number>
+  checkIns: string[] // ISO dates
+  reviews: string[] // 'YYYY-Www'
+  personalBests: Record<string, number>
+}
+
+export interface GamificationSettings {
+  enabled: boolean
+  celebrations: boolean
+  coach: boolean
+  /** Quiet hours, local time, wrapping past midnight (`[21, 8]` → 21:00–08:00). */
+  quietHours: [number, number]
+  pinnedTitle?: string | null
+  showTips?: boolean
+}
+
 export interface Settings {
   name: string
   currency: string // base currency
@@ -239,6 +326,9 @@ export interface Settings {
   aliases?: Alias[]
   savedViews?: SavedView[]
   notifications?: NotificationRecord[]
+  gamification?: GamificationSettings
+  /** Guided tours the user has already seen (or skipped), by page. */
+  tourSeen?: string[]
 }
 
 export interface AppData {
@@ -254,4 +344,6 @@ export interface AppData {
   debtPayments: DebtPayment[]
   rules: Rule[]
   settings: Settings
+  /** XP, streaks, badges, quests and seasons. Seeded from history on migration to v4. */
+  progress?: Progress
 }

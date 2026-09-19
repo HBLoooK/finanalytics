@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from 'recharts'
 import { useConverter, useStore } from '../store'
 import { byCategory, byTag, dailySpend, inMonth, monthlySeries, netWorthSeries, topPayees, totals, txBase } from '../lib/analytics'
@@ -12,6 +12,11 @@ const Y = '#f2cf3a'
 const G = '#3ec97a'
 
 export function Analytics() {
+  // Insight badges count the analysis you actually open.
+  useEffect(() => {
+    useStore.getState().bumpStat('anomalyViews')
+  }, [])
+
   const { transactions, categories, accounts, settings, holdings, debts } = useStore()
   const conv = useConverter()
   const money = useMoney()
@@ -326,13 +331,15 @@ export function Analytics() {
                       ? 'var(--panel-2)'
                       : `color-mix(in srgb, var(--accent) ${[0, 25, 45, 70, 100][c.level]!}%, var(--panel-2))`,
                 }}
-                onClick={() =>
+                onClick={() => {
+                  useStore.getState().bumpStat('heatmapClicks')
+                  useStore.getState().bumpStat('drilldowns')
                   setDrill({
                     title: fmtDate(c.date, settings.locale),
                     subtitle: `${money(c.value)} spent`,
                     match: (t) => t.date === c.date && t.type === 'expense',
                   })
-                }
+                }}
               />
             ))}
           </div>

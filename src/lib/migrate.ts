@@ -1,7 +1,8 @@
 // State migrations. Runs once per loaded state, on the client, before the store is used.
 // Each step upgrades `version` in place. Keep them cheap and idempotent.
-import { DATA_VERSION, defaultSettings } from './seed'
-import type { AppData, Transaction } from './types'
+import { DATA_VERSION, defaultGamification, defaultSettings } from './seed'
+import { derivedStats, emptyProgress, personalBests, seedProgressFromHistory } from './gamification'
+import type { AppData, GamificationSettings, Progress, StreakState, Transaction } from './types'
 import { today } from './utils'
 
 type Any = Record<string, any>
@@ -62,11 +63,66 @@ function toV3(s: Any) {
   s.version = 3
 }
 
+/** v3 → v4: progression. Existing installs get their history back-computed. */
+function toV4(s: Any) {
+  const st = (s.settings ??= { ...defaultSettings })
+
+  // Settings: progression defaults, never overwriting an explicit choice.
+  if (!st.gamification || typeof st.gamification !== 'object') st.gamification = { ...defaultGamification }
+  const g = st.gamification as GamificationSettings
+  if (typeof g.enabled !== 'boolean') g.enabled = defaultGamification.enabled
+  if (typeof g.celebrations !== 'boolean') g.celebrations = defaultGamification.celebrations
+  if (typeof g.coach !== 'boolean') g.coach = defaultGamification.coach
+  if (!Array.isArray(g.quietHours) || g.quietHours.length !== 2 || !g.quietHours.every((n) => isNum(n) && n >= 0 && n <= 23)) g.quietHours = [...defaultGamification.quietHours]
+  if (g.pinnedTitle === undefined) g.pinnedTitle = null
+  if (typeof g.showTips !== 'boolean') g.showTips = defaultGamification.showTips
+  if (!Array.isArray(st.tourSeen)) st.tourSeen = []
+
+  // Progress: normalise whatever is there, or seed it from history.
+  const normalStreak = (x: Any): StreakState => ({
+    current: isNum(x?.current) ? Math.max(0, Math.floor(x.current)) : 0,
+    longest: isNum(x?.longest) ? Math.max(0, Math.floor(x.longest)) : 0,
+    lastDay: typeof x?.lastDay === 'string' ? x.lastDay : null,
+    freezes: isNum(x?.freezes) ? Math.min(2, Math.max(0, Math.floor(x.freezes))) : 0,
+  })
+
+  let p: Progress = s.progress && typeof s.progress === 'object' ? (s.progress as Progress) : emptyProgress()
+  if (!isNum(p.xp) || p.xp < 0) p.xp = 0
+  if (!p.xpLog || typeof p.xpLog !== 'object') p.xpLog = {}
+  p.streak = normalStreak(p.streak)
+  p.streak.longest = Math.max(p.streak.longest, p.streak.current)
+  p.reviewStreak = normalStreak(p.reviewStreak)
+  if (!p.badges || typeof p.badges !== 'object') p.badges = {}
+  if (!Array.isArray(p.quests)) p.quests = []
+  if (p.questsGeneratedOn !== null && typeof p.questsGeneratedOn !== 'string') p.questsGeneratedOn = null
+  if (!Array.isArray(p.seasons)) p.seasons = []
+  if (!p.coach || typeof p.coach !== 'object') p.coach = { lastShownAt: null, lastKey: null, dismissed: [] }
+  if (!Array.isArray(p.coach.dismissed)) p.coach.dismissed = []
+  if (!p.stats || typeof p.stats !== 'object') p.stats = {}
+  if (!Array.isArray(p.checkIns)) p.checkIns = []
+  if (!Array.isArray(p.reviews)) p.reviews = []
+  if (!p.personalBests || typeof p.personalBests !== 'object') p.personalBests = {}
+
+  const ctx = { ...s, progress: p, version: DATA_VERSION } as unknown as AppData
+  const hasHistory = (s.transactions ?? []).length > 0 && Object.keys(p.xpLog).length === 0
+  if (hasHistory) {
+    const { version: _version, ...rest } = ctx
+    p = seedProgressFromHistory(rest, today())
+  } else {
+    // Fill in the stats that can be derived, without touching awarded XP.
+    p = { ...p, stats: { ...derivedStats(ctx), ...p.stats }, personalBests: personalBests(ctx, today()) }
+  }
+
+  s.progress = p
+  s.version = 4
+}
+
 /** Repair pass: runs on every load, fixes things that should never be wrong. */
 export function repair(state: AppData): AppData {
   const s = state as unknown as Any
   const version = Number(s.version ?? 0)
   if (version < 3) toV3(s)
+  if (version < 4) toV4(s)
   s.version = DATA_VERSION
 
   const ids = new Set<string>((s.accounts ?? []).map((a: Any) => a.id))

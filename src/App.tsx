@@ -19,6 +19,9 @@ import { Reports } from './pages/Reports'
 import { DataHealth } from './pages/DataHealth'
 import { YearInReview } from './pages/YearInReview'
 import { Onboarding } from './components/Onboarding'
+import { Progress } from './pages/Progress'
+import { WeeklyReview } from './pages/WeeklyReview'
+import { HelpPage } from './pages/Help'
 
 function Splash() {
   const status = useSync((s) => s.status)
@@ -83,6 +86,9 @@ function App() {
             <Route path="/import" element={<ImportPage />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/health" element={<DataHealth />} />
+            <Route path="/progress" element={<Progress />} />
+            <Route path="/weekly" element={<WeeklyReview />} />
+            <Route path="/help" element={<HelpPage />} />
             <Route path="/review" element={<YearInReview />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

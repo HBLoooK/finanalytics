@@ -7,13 +7,17 @@ import type {
   Category,
   Debt,
   DebtPayment,
+  GamificationSettings,
   Goal,
   Holding,
+  Progress,
+  Quest,
   Recurring,
   Rule,
   SavedView,
   Settings,
   Transaction,
+  XpEvent,
 } from './lib/types'
 import { DATA_VERSION, defaultSettings, demoData, emptyData } from './lib/seed'
 import { nextOccurrence, round2, today, uid } from './lib/utils'
@@ -21,6 +25,36 @@ import { applyRules } from './lib/rules'
 import { CACHE_KEY, applyOpsToState, consumeInitialPush, diffStates, onRemoteChange, sqliteStorage, withRemoteGuard } from './lib/sync'
 import { repair } from './lib/migrate'
 import { pushUndo } from './lib/undo'
+import {
+  ACTIVITY,
+  applyXp,
+  emptyProgress,
+  evaluateBadges,
+  levelFromXp,
+  markDay,
+  markWeek,
+  refreshQuests,
+  seedProgressFromHistory,
+  titleForLevel,
+  weekKey,
+  type GameCtx,
+} from './lib/gamification'
+import { TIER_NAMES } from './lib/badges'
+import { celebrate } from './lib/celebrate'
+import { defaultGamification } from './lib/seed'
+
+/** Progression events that also increment a running counter. */
+const STAT_FOR_EVENT: Partial<Record<XpEvent, string>> = {
+  'tx.categorise': 'categorised',
+  'tx.split': 'splits',
+  'tx.receipt': 'receipts',
+  'account.reconcile': 'reconciled',
+}
+
+const ACTIVITY_SET = new Set<XpEvent>(ACTIVITY)
+
+/** The store *is* the game context, minus `version` and the actions. */
+const asCtx = (s: Store): GameCtx => s as unknown as GameCtx
 
 type Omitted<T> = Omit<T, 'id'>
 
@@ -82,6 +116,19 @@ interface Store extends AppData {
   resetEmpty: () => void
   clearAll: () => void
   applyRemoteState: () => void
+
+  /* progression */
+  recordEvent: (event: XpEvent, opts?: { date?: string; count?: number; once?: string }) => void
+  bumpStat: (key: string, by?: number) => void
+  completeCheckIn: () => void
+  completeReview: () => void
+  claimQuest: (id: string) => void
+  refreshQuestsBoard: () => void
+  refreshBadges: () => void
+  dismissCoach: (key: string) => void
+  markCoachShown: (key: string) => void
+  setGamification: (patch: Partial<GamificationSettings>) => void
+  resetProgress: () => void
 }
 
 const initial = demoData()
@@ -110,12 +157,16 @@ export const useStore = create<Store>()(
 
       addTransaction: (t, useRules = false) => {
         const id = uid()
-        set((s) => {
-          const tx = useRules ? applyRules(s.rules, t).tx : t
-          return {
-            transactions: [{ ...tx, id, amount: money(tx.amount), status: tx.status ?? 'cleared', createdAt: today() }, ...s.transactions],
-          }
-        })
+        const resolved = useRules ? applyRules(get().rules, t).tx : t
+        set((s) => ({
+          transactions: [{ ...resolved, id, amount: money(resolved.amount), status: resolved.status ?? 'cleared', createdAt: today() }, ...s.transactions],
+        }))
+        const st = get()
+        if (resolved.type === 'transfer' && resolved.toAmount && resolved.rateUsed) st.bumpStat('crossCurrency')
+        if (resolved.refundOf) st.bumpStat('refunds')
+        if (resolved.owedBy) st.bumpStat('owed')
+        if (resolved.attachmentId) st.bumpStat('receipts')
+        st.recordEvent(resolved.type === 'transfer' ? 'tx.transfer' : 'tx.add')
         return id
       },
       addTransactions: (ts) => {
@@ -123,14 +174,23 @@ export const useStore = create<Store>()(
         set((s) => ({
           transactions: [...rows, ...s.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
         }))
+        if (rows.length) get().recordEvent('tx.import', { count: rows.length })
         return rows.map((r) => r.id)
       },
-      updateTransaction: (id, patch) =>
+      updateTransaction: (id, patch) => {
+        const before = get().transactions.find((t) => t.id === id)
         set((s) => ({
           transactions: s.transactions.map((t) =>
             t.id === id ? { ...t, ...patch, ...(patch.amount !== undefined ? { amount: money(patch.amount) } : {}), updatedAt: today() } : t,
           ),
-        })),
+        }))
+        if (!before) return
+        const st = get()
+        if (!before.categoryId && patch.categoryId) st.recordEvent('tx.categorise')
+        if (patch.splits?.length && !before.splits?.length) st.recordEvent('tx.split')
+        if (patch.attachmentId && !before.attachmentId) st.recordEvent('tx.receipt')
+        if (patch.status === 'reconciled' && before.status !== 'reconciled') st.recordEvent('account.reconcile')
+      },
       deleteTransaction: (id) => {
         const gone = get().transactions.find((t) => t.id === id)
         set((s) => ({ transactions: s.transactions.filter((t) => t.id !== id) }))
@@ -209,12 +269,15 @@ export const useStore = create<Store>()(
           }
         }),
 
-      setBudget: (categoryId, limit, patch) =>
+      setBudget: (categoryId, limit, patch) => {
+        const existed = get().budgets.some((b) => b.categoryId === categoryId)
         set((s) => {
           const next = { limit: money(limit), ...patch }
           if (s.budgets.some((b) => b.categoryId === categoryId)) return { budgets: s.budgets.map((b) => (b.categoryId === categoryId ? { ...b, ...next } : b)) }
           return { budgets: [...s.budgets, { id: uid(), categoryId, period: 'monthly', rollover: false, rolloverAmount: 0, ...next }] }
-        }),
+        })
+        if (!existed) get().recordEvent('setup.budget', { once: categoryId })
+      },
       deleteBudget: (id) => {
         const gone = get().budgets.find((b) => b.id === id)
         set((s) => ({ budgets: s.budgets.filter((b) => b.id !== id) }))
@@ -222,14 +285,22 @@ export const useStore = create<Store>()(
       },
 
       addGoal: (g) => set((s) => ({ goals: [...s.goals, { ...g, id: uid() }] })),
-      updateGoal: (id, patch) => set((s) => ({ goals: s.goals.map((g) => (g.id === id ? { ...g, ...patch } : g)) })),
+      updateGoal: (id, patch) => {
+        const before = get().goals.find((g) => g.id === id)
+        set((s) => ({ goals: s.goals.map((g) => (g.id === id ? { ...g, ...patch } : g)) }))
+        if (before && patch.saved !== undefined && patch.saved > before.saved) get().recordEvent('goal.contribute', { once: `${id}:${patch.saved}` })
+      },
       deleteGoal: (id) => {
         const gone = get().goals.find((g) => g.id === id)
         set((s) => ({ goals: s.goals.filter((g) => g.id !== id) }))
         if (gone) pushUndo(`Deleted goal “${gone.name}”`, () => set((s) => ({ goals: [...s.goals, gone] })))
       },
 
-      addRecurring: (r) => set((s) => ({ recurring: [...s.recurring, { ...r, amount: money(r.amount), id: uid() }] })),
+      addRecurring: (r) => {
+        const id = uid()
+        set((s) => ({ recurring: [...s.recurring, { ...r, amount: money(r.amount), id }] }))
+        get().recordEvent('setup.recurring', { once: id })
+      },
       updateRecurring: (id, patch) =>
         set((s) => ({
           recurring: s.recurring.map((r) => (r.id === id ? { ...r, ...patch, ...(patch.amount !== undefined ? { amount: money(patch.amount) } : {}) } : r)),
@@ -239,7 +310,8 @@ export const useStore = create<Store>()(
         set((s) => ({ recurring: s.recurring.filter((r) => r.id !== id) }))
         if (gone) pushUndo(`Deleted “${gone.name}”`, () => set((s) => ({ recurring: [...s.recurring, gone] })))
       },
-      postRecurring: (id, date) =>
+      postRecurring: (id, date) => {
+        const bill = get().recurring.find((x) => x.id === id)
         set((s) => {
           const r = s.recurring.find((x) => x.id === id)
           if (!r) return {}
@@ -249,7 +321,9 @@ export const useStore = create<Store>()(
             transactions: [tx, ...s.transactions],
             recurring: s.recurring.map((x) => (x.id === id ? { ...x, nextDate: next, active: x.endDate && next > x.endDate ? false : x.active } : x)),
           }
-        }),
+        })
+        if (bill) get().recordEvent('bill.post', { date: date ?? bill.nextDate, once: `${id}:${date ?? bill.nextDate}` })
+      },
       skipRecurring: (id) =>
         set((s) => ({
           recurring: s.recurring.map((x) => (x.id === id ? { ...x, nextDate: nextOccurrence(x.nextDate, x.frequency) } : x)),
@@ -284,7 +358,11 @@ export const useStore = create<Store>()(
       },
 
       addHolding: (h) => set((s) => ({ holdings: [...s.holdings, { ...h, id: uid() }] })),
-      updateHolding: (id, patch) => set((s) => ({ holdings: s.holdings.map((h) => (h.id === id ? { ...h, ...patch, updatedAt: today() } : h)) })),
+      updateHolding: (id, patch) => {
+        const before = get().holdings.find((h) => h.id === id)
+        set((s) => ({ holdings: s.holdings.map((h) => (h.id === id ? { ...h, ...patch, updatedAt: today() } : h)) }))
+        if (before && patch.price !== undefined && patch.price !== before.price) get().recordEvent('holding.price')
+      },
       deleteHolding: (id) => {
         const gone = get().holdings.find((h) => h.id === id)
         set((s) => ({ holdings: s.holdings.filter((h) => h.id !== id) }))
@@ -379,7 +457,8 @@ export const useStore = create<Store>()(
         set((s) => ({ debts: s.debts.filter((d) => d.id !== id), debtPayments: s.debtPayments.filter((p) => p.debtId !== id) }))
         if (gone) pushUndo(`Deleted debt “${gone.name}”`, () => set((s) => ({ debts: [...s.debts, gone], debtPayments: [...s.debtPayments, ...pays] })))
       },
-      payDebt: (debtId, amount, date, note, recordTx) =>
+      payDebt: (debtId, amount, date, note, recordTx) => {
+        const known = !!get().debts.find((x) => x.id === debtId)
         set((s) => {
           const d = s.debts.find((x) => x.id === debtId)
           if (!d) return {}
@@ -403,7 +482,9 @@ export const useStore = create<Store>()(
             ]
           }
           return patch
-        }),
+        })
+        if (known) get().recordEvent('debt.pay', { date })
+      },
       /** Accrue monthly interest on every debt that carries an APR. Idempotent per calendar month. */
       accrueInterest: () => {
         const s = get()
@@ -435,7 +516,11 @@ export const useStore = create<Store>()(
         return n
       },
 
-      addRule: (r) => set((s) => ({ rules: [...s.rules, { ...r, id: uid() }] })),
+      addRule: (r) => {
+        const id = uid()
+        set((s) => ({ rules: [...s.rules, { ...r, id }] }))
+        get().recordEvent('setup.rule', { once: id })
+      },
       updateRule: (id, patch) => set((s) => ({ rules: s.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)) })),
       deleteRule: (id) => {
         const gone = get().rules.find((r) => r.id === id)
@@ -467,6 +552,128 @@ export const useStore = create<Store>()(
       addSavedView: (v) => set((s) => ({ settings: { ...s.settings, savedViews: [...(s.settings.savedViews ?? []), { ...v, id: uid() }] } })),
       deleteSavedView: (id) => set((s) => ({ settings: { ...s.settings, savedViews: (s.settings.savedViews ?? []).filter((v) => v.id !== id) } })),
 
+      /* -------------------------------------------------- progression ---- */
+
+      /**
+       * Award XP for one habit: caps applied, matching quests advanced (and
+       * their reward paid out), counters bumped, streak marked, then badges
+       * re-evaluated. A complete no-op while progression is switched off.
+       */
+      recordEvent: (event, opts = {}) => {
+        const s = get()
+        if (s.settings.gamification?.enabled === false) return
+        const date = opts.date ?? today()
+        const celebrations = s.settings.gamification?.celebrations !== false
+        const beforeLevel = levelFromXp(s.progress?.xp ?? 0)
+        let p: Progress = s.progress ?? emptyProgress()
+
+        p = applyXp(p, event, { ...opts, date }).progress
+
+        const quests: Quest[] = p.quests.map((q) => {
+          if (q.state !== 'open' || q.track !== event) return q
+          const done = Math.min(q.target, q.done + (opts.count ?? 1))
+          return { ...q, done, state: done >= q.target ? 'done' : 'open' }
+        })
+        for (let i = 0; i < quests.length; i++) {
+          const was = p.quests[i]
+          const now = quests[i]
+          if (was && now && was.state === 'open' && now.state === 'done') {
+            p = applyXp(p, 'quest', { date, count: now.reward }).progress
+            if (celebrations) celebrate({ kind: 'quest', title: 'Quest complete', body: now.text, icon: '🎯' })
+          }
+        }
+        p = { ...p, quests }
+
+        const statKey = STAT_FOR_EVENT[event]
+        if (statKey) p = { ...p, stats: { ...p.stats, [statKey]: (p.stats[statKey] ?? 0) + (opts.count ?? 1) } }
+
+        if (ACTIVITY_SET.has(event)) p = { ...p, streak: markDay(p.streak, date) }
+
+        set({ progress: p })
+
+        const level = levelFromXp(p.xp)
+        if (celebrations && level > beforeLevel) celebrate({ kind: 'level', title: `Level ${level}`, body: titleForLevel(level), icon: '⭐' })
+        get().refreshBadges()
+      },
+
+      bumpStat: (key, by = 1) => {
+        if (get().settings.gamification?.enabled === false) return
+        set((s) => {
+          const p = s.progress ?? emptyProgress()
+          return { progress: { ...p, stats: { ...p.stats, [key]: (p.stats[key] ?? 0) + by } } }
+        })
+      },
+
+      completeCheckIn: () => {
+        const s = get()
+        if (s.settings.gamification?.enabled === false) return
+        const date = today()
+        const p = s.progress ?? emptyProgress()
+        if (p.checkIns.includes(date)) return
+        set({ progress: { ...p, checkIns: [...p.checkIns, date] } })
+        get().recordEvent('checkin', { date })
+      },
+
+      completeReview: () => {
+        const s = get()
+        if (s.settings.gamification?.enabled === false) return
+        const date = today()
+        const key = weekKey(date)
+        const p = s.progress ?? emptyProgress()
+        if (p.reviews.includes(key)) return
+        set({ progress: { ...p, reviews: [...p.reviews, key], reviewStreak: markWeek(p.reviewStreak, date) } })
+        get().recordEvent('review', { date })
+      },
+
+      claimQuest: (id) =>
+        set((s) => {
+          const p = s.progress ?? emptyProgress()
+          return { progress: { ...p, quests: p.quests.map((q) => (q.id === id && q.state === 'done' ? { ...q, state: 'expired' } : q)) } }
+        }),
+
+      refreshQuestsBoard: () => {
+        const s = get()
+        if (s.settings.gamification?.enabled === false) return
+        set({ progress: refreshQuests(s.progress ?? emptyProgress(), asCtx(s), today()) })
+      },
+
+      refreshBadges: () => {
+        const s = get()
+        if (s.settings.gamification?.enabled === false) return
+        const p = s.progress ?? emptyProgress()
+        const { badges, unlocked } = evaluateBadges(asCtx(s), today(), p.badges)
+        if (!unlocked.length) return
+        set({ progress: { ...p, badges } })
+        if (s.settings.gamification?.celebrations !== false) {
+          const top = unlocked[unlocked.length - 1]
+          celebrate({ kind: 'badge', title: `${top.name} unlocked`, body: top.tier > 1 ? `${TIER_NAMES[top.tier]} tier` : undefined, icon: '🏅' })
+        }
+      },
+
+      dismissCoach: (key) =>
+        set((s) => {
+          const p = s.progress ?? emptyProgress()
+          if (p.coach.dismissed.includes(key)) return {}
+          return { progress: { ...p, coach: { ...p.coach, dismissed: [...p.coach.dismissed, key] } } }
+        }),
+
+      markCoachShown: (key) =>
+        set((s) => {
+          const p = s.progress ?? emptyProgress()
+          return { progress: { ...p, coach: { ...p.coach, lastKey: key, lastShownAt: today() } } }
+        }),
+
+      setGamification: (patch) =>
+        set((s) => ({
+          settings: { ...s.settings, gamification: { ...defaultGamification, ...(s.settings.gamification ?? {}), ...patch } },
+        })),
+
+      /** Throw away awarded progress and recompute it from the data you have. */
+      resetProgress: () => {
+        const s = get()
+        set({ progress: seedProgressFromHistory({ ...asCtx(s), progress: emptyProgress() }, today()) })
+      },
+
       updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
       setRate: (currency, rate) =>
         set((s) => ({
@@ -475,6 +682,7 @@ export const useStore = create<Store>()(
       replaceAll: (data) =>
         set(() => ({
           version: DATA_VERSION,
+          progress: data.progress ?? emptyProgress(),
           accounts: data.accounts ?? [],
           categories: data.categories ?? [],
           transactions: data.transactions ?? [],
@@ -524,6 +732,7 @@ export const useStore = create<Store>()(
           withRemoteGuard(() => {
             set(() => ({
               version: DATA_VERSION,
+              progress: state.progress ?? emptyProgress(),
               accounts: state.accounts ?? [],
               categories: state.categories ?? [],
               transactions: state.transactions ?? [],
@@ -568,6 +777,7 @@ export const useStore = create<Store>()(
         debtPayments: s.debtPayments,
         rules: s.rules,
         settings: s.settings,
+        progress: s.progress,
       }),
       merge: (persisted, current) => {
         if (!persisted) return current
@@ -581,6 +791,7 @@ export const useStore = create<Store>()(
           debtPayments: p.debtPayments ?? [],
           rules: p.rules ?? current.rules,
           settings: { ...defaultSettings, ...(p.settings ?? {}), rates: { ...defaultSettings.rates, ...(p.settings?.rates ?? {}) } },
+          progress: p.progress ?? current.progress,
         } as Store
         return repair(merged as unknown as AppData) as unknown as Store
       },
@@ -595,6 +806,7 @@ onRemoteChange({
     const state = useStore.getState()
     const current = {
       version: DATA_VERSION,
+      progress: state.progress,
       accounts: state.accounts,
       categories: state.categories,
       transactions: state.transactions,
@@ -617,6 +829,7 @@ export const exportData = (): AppData => {
   const s = useStore.getState()
   return {
     version: s.version,
+    progress: s.progress,
     accounts: s.accounts,
     categories: s.categories,
     transactions: s.transactions,

@@ -34,6 +34,11 @@ export function Transactions({ search }: { search: string }) {
   const allTags = useMemo(() => [...new Set(transactions.flatMap((t) => t.tags ?? []))].sort(), [transactions])
   const q = useMemo(() => parseQuery(search), [search])
 
+  // Search operators are a skill worth rewarding; bump once per qualifying query.
+  useEffect(() => {
+    if (/(^|\s)(-?[a-z]+:\S|#\S|-\S|[<>]=?\s?\d)/i.test(search)) useStore.getState().bumpStat('searchOperators')
+  }, [search])
+
   const filtered = useMemo(() => {
     return transactions
       .filter((t) => type === 'all' || t.type === type)

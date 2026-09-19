@@ -4,11 +4,13 @@ import {
   ArrowLeftRight,
   BarChart3,
   Bell,
+  CalendarCheck,
   CalendarClock,
   Command,
   FileText,
   GitCompareArrows,
   HeartPulse,
+  HelpCircle,
   Landmark,
   LayoutDashboard,
   LineChart,
@@ -21,6 +23,7 @@ import {
   Sparkles,
   Sun,
   Target,
+  Trophy,
   Upload,
   Wallet,
 } from 'lucide-react'
@@ -38,6 +41,10 @@ import { UndoToasts } from './Toasts'
 import { TokenGate } from './TokenGate'
 import { MobileNav } from './MobileNav'
 import { LockScreen } from './LockScreen'
+import { XPBar } from './XPBar'
+import { Celebrations } from './Celebration'
+import { Tour } from './Tour'
+import { HelpPanel } from './InfoTip'
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -54,6 +61,8 @@ const nav = [
   { to: '/import', label: 'Import', icon: Upload },
   { to: '/reports', label: 'Reports', icon: FileText },
   { to: '/health', label: 'Data health', icon: HeartPulse },
+  { to: '/progress', label: 'Progress', icon: Trophy },
+  { to: '/weekly', label: 'Weekly review', icon: CalendarCheck },
 ]
 
 const titles: Record<string, [string, string]> = {
@@ -71,6 +80,31 @@ const titles: Record<string, [string, string]> = {
   '/review': ['Year in review', 'Your money story, one year at a time'],
   '/health': ['Data health', 'Everything that quietly skews your numbers'],
   '/settings': ['Settings', 'Profile, currencies and data'],
+  '/progress': ['Progress', 'Levels, quests, badges and seasons'],
+  '/weekly': ['Weekly review', 'Five steps to leave the books correct'],
+  '/help': ['Help', 'Every number in the app, explained'],
+}
+
+/** Which explanations belong to which route — rendered as “About this page”. */
+const PAGE_HELP: Record<string, string[]> = {
+  '/': ['safe-to-spend', 'safe-to-spend-perday', 'safe-to-spend-buffer', 'forecast', 'liquid-balance', 'net-worth', 'savings-rate', 'xp', 'coach'],
+  '/transactions': ['transaction', 'splits', 'status', 'refund', 'owed-by', 'attachment', 'tags', 'search-operators', 'saved-view'],
+  '/wallet': ['account-balance', 'reconciliation', 'archive-account', 'liquid-balance'],
+  '/budgets': ['budget', 'rollover', 'burn-down', 'fifty-thirty-twenty', 'period'],
+  '/goals': ['goal', 'goal-pacing', 'savings-rate'],
+  '/analytics': ['sankey', 'heatmap', 'drill-down', 'anomaly', 'subscription-creep', 'data-health'],
+  '/compare': ['compare', 'period', 'savings-rate'],
+  '/recurring': ['recurring', 'variable-bill', 'auto-match', 'detected-recurring', 'forecast'],
+  '/investments': ['lot', 'realised-pnl', 'xirr', 'twr', 'rebalance', 'holdings-value', 'dividend'],
+  '/debts': ['apr', 'amortisation', 'avalanche'],
+  '/import': ['import', 'import-batch', 'rules', 'why-category', 'alias'],
+  '/reports': ['tax-deductible', 'reports', 'attachment'],
+  '/health': ['data-health', 'reconciliation', 'anomaly', 'base-currency'],
+  '/review': ['year-in-review', 'savings-rate', 'compare'],
+  '/settings': ['base-currency', 'rate-used', 'backup', 'sql-console', 'passcode-lock', 'pwa', 'sync', 'xp'],
+  '/progress': ['xp', 'streak', 'badges', 'quests', 'seasons', 'coach'],
+  '/weekly': ['weekly-review', 'coach', 'quests'],
+  '/help': ['data-health', 'search-operators', 'xp'],
 }
 
 export function Layout({ children, search, onSearch }: { children: ReactNode; search: string; onSearch: (s: string) => void }) {
@@ -91,6 +125,13 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
   useEffect(() => {
     if (settings.lastRecurringRun !== today() || recurring.some((r) => r.active && r.autoPost && r.nextDate <= today())) runAutoPost()
     accrueInterest()
+    // Give hydration a beat, then bring quests and badges up to date.
+    const t = window.setTimeout(() => {
+      const st = useStore.getState()
+      st.refreshQuestsBoard()
+      st.refreshBadges()
+    }, 1500)
+    return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -109,6 +150,10 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
       if (e.key.toLowerCase() === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !typing) {
         e.preventDefault()
         setShowAdd(true)
+      }
+      if (e.key === '?' && !typing) {
+        e.preventDefault()
+        navigate('/help')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -214,6 +259,7 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
             </div>
           </div>
           <div className="topbar-right">
+            <XPBar />
             <button className="icon-btn palette-btn" onClick={() => setPalette(true)} aria-label="Search and commands" title="Search & commands (⌘K)">
               <Command size={16} />
             </button>
@@ -225,6 +271,9 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
               <Bell size={16} />
               <NotificationBadge />
             </button>
+            <button className="icon-btn" onClick={() => navigate('/help')} aria-label="Help centre" title="Help centre (?)">
+              <HelpCircle size={16} />
+            </button>
             <NavLink to="/settings" className="user-chip">
               <div className="avatar">{initials(settings.name)}</div>
               <div className="txt">
@@ -235,6 +284,7 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
         </header>
         <div className="page" id="main-content" key={loc.pathname + (search ? ':search' : '')}>
           {children}
+          {PAGE_HELP[loc.pathname] && <HelpPanel ids={PAGE_HELP[loc.pathname]} />}
         </div>
       </main>
 
@@ -250,6 +300,8 @@ export function Layout({ children, search, onSearch }: { children: ReactNode; se
       <UndoToasts />
       <div aria-live="polite" className="sr-only" />
       <TokenGate />
+      <Celebrations />
+      <Tour />
       {locked && <LockScreen />}
       <button className="hidden-shortcut" onClick={() => navigate('/transactions')} aria-hidden tabIndex={-1} />
     </div>

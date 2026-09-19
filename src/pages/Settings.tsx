@@ -10,13 +10,18 @@ import { useToast } from '../components/Toasts'
 import { suggestAliases } from '../lib/matching'
 import { requestNotificationPermission } from '../lib/notifications'
 import { hasLockCode, setLockCode } from '../lib/lock'
+import { InfoTip } from '../components/InfoTip'
+import { ALL_TITLES, levelProgress, titleForLevel } from '../lib/gamification'
+import { BADGES } from '../lib/badges'
+import { HELP } from '../lib/help'
+import { TOURS } from '../lib/tours'
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'MAD', 'CAD', 'AUD', 'CHF', 'JPY', 'INR', 'BRL', 'MXN', 'SEK', 'NOK', 'PLN', 'CZK', 'TRY', 'ZAR', 'SGD', 'AED', 'SAR', 'EGP', 'CNY', 'KRW']
 
 export function SettingsPage() {
-  const { settings, updateSettings, setRate, categories, addCategory, updateCategory, deleteCategory, transactions, accounts, replaceAll, resetDemo, resetEmpty, clearAll, addAlias, deleteAlias, deleteSavedView, archiveAccount } = useStore()
+  const { settings, updateSettings, setRate, categories, addCategory, updateCategory, deleteCategory, transactions, accounts, replaceAll, resetDemo, resetEmpty, clearAll, addAlias, deleteAlias, deleteSavedView, archiveAccount, setGamification, resetProgress, refreshBadges, progress } = useStore()
   const [editing, setEditing] = useState<Category | 'new' | null>(null)
-  const [tab, setTab] = useState<'general' | 'data' | 'categories' | 'advanced'>('general')
+  const [tab, setTab] = useState<'general' | 'progress' | 'data' | 'categories' | 'advanced'>('general')
   const [newCur, setNewCur] = useState('')
   const [fetching, setFetching] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -63,6 +68,7 @@ export function SettingsPage() {
         {(
           [
             ['general', 'Profile & preferences'],
+            ['progress', 'Progress & tips'],
             ['data', 'Database & backups'],
             ['categories', 'Categories, aliases & views'],
             ['advanced', 'Advanced'],
@@ -272,6 +278,142 @@ export function SettingsPage() {
                   Optional: one HTTPS request to frankfurter.dev (no key, no data sent). Last updated {fmtWhen(settings.ratesUpdatedAt ?? null)}.
                 </div>
               </div>
+            </div>
+          </Card>
+        </>
+      )}
+
+      {tab === 'progress' && (
+        <>
+          <Card className="col-6" title="Progress" sub="XP, levels, streaks, badges, quests and seasons">
+            <div className="switch-row">
+              <div>
+                <div className="switch-label">
+                  Progression <InfoTip id="xp" />
+                </div>
+                <div className="muted">One master switch for the whole system. Turning it off stops XP, quests, badges and the coach; nothing already earned is deleted.</div>
+              </div>
+              <button className="switch-btn" role="switch" aria-checked={settings.gamification?.enabled !== false} onClick={() => setGamification({ enabled: settings.gamification?.enabled === false })}>
+                <span className={`switch ${settings.gamification?.enabled !== false ? 'on' : ''}`} />
+              </button>
+            </div>
+            <div className="switch-row">
+              <div>
+                <div className="switch-label">Celebrations</div>
+                <div className="muted">A short burst of confetti for level-ups, badges and quests. Always skipped when your system asks for reduced motion.</div>
+              </div>
+              <button className="switch-btn" role="switch" aria-checked={settings.gamification?.celebrations !== false} onClick={() => setGamification({ celebrations: settings.gamification?.celebrations === false })}>
+                <span className={`switch ${settings.gamification?.celebrations !== false ? 'on' : ''}`} />
+              </button>
+            </div>
+            <div className="switch-row">
+              <div>
+                <div className="switch-label">
+                  Coach <InfoTip id="coach" />
+                </div>
+                <div className="muted">One data-driven nudge a day on the dashboard. Never a modal, and dismissals stick.</div>
+              </div>
+              <button className="switch-btn" role="switch" aria-checked={settings.gamification?.coach !== false} onClick={() => setGamification({ coach: settings.gamification?.coach === false })}>
+                <span className={`switch ${settings.gamification?.coach !== false ? 'on' : ''}`} />
+              </button>
+            </div>
+            <div className="switch-row">
+              <div>
+                <div className="switch-label">Explanation tips</div>
+                <div className="muted">The ? beside KPIs, chart titles and settings, plus the “About this page” panels.</div>
+              </div>
+              <button className="switch-btn" role="switch" aria-checked={settings.gamification?.showTips !== false} onClick={() => setGamification({ showTips: settings.gamification?.showTips === false })}>
+                <span className={`switch ${settings.gamification?.showTips !== false ? 'on' : ''}`} />
+              </button>
+            </div>
+            <div className="form-grid" style={{ marginTop: 12 }}>
+              <label>
+                <span className="field-label">Quiet hours from</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={(settings.gamification?.quietHours ?? [21, 8])[0]}
+                  onChange={(e) => setGamification({ quietHours: [Math.max(0, Math.min(23, Number(e.target.value) || 0)), (settings.gamification?.quietHours ?? [21, 8])[1]] })}
+                />
+              </label>
+              <label>
+                <span className="field-label">Quiet hours to</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={(settings.gamification?.quietHours ?? [21, 8])[1]}
+                  onChange={(e) => setGamification({ quietHours: [(settings.gamification?.quietHours ?? [21, 8])[0], Math.max(0, Math.min(23, Number(e.target.value) || 0))] })}
+                />
+              </label>
+              <label>
+                <span className="field-label">Pinned title</span>
+                <input
+                  placeholder={titleForLevel(levelProgress(progress?.xp ?? 0).level)}
+                  value={settings.gamification?.pinnedTitle ?? ''}
+                  onChange={(e) => setGamification({ pinnedTitle: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="review-actions" style={{ marginTop: 12 }}>
+              <button
+                className="btn small"
+                onClick={() => {
+                  resetProgress()
+                  refreshBadges()
+                  toast('Progress recomputed from your history')
+                }}
+              >
+                <RefreshCw size={14} /> Recompute from history
+              </button>
+              <button className="btn small ghost" onClick={() => updateSettings({ tourSeen: [] })}>
+                Replay every tour
+              </button>
+            </div>
+          </Card>
+
+          <Card className="col-6" title="Where you are" sub="Levels, titles and the shelf">
+            <ul className="metric-list">
+              <li>
+                <span>Level</span>
+                <b>{levelProgress(progress?.xp ?? 0).level}</b>
+              </li>
+              <li>
+                <span>Title</span>
+                <b>{settings.gamification?.pinnedTitle?.trim() || titleForLevel(levelProgress(progress?.xp ?? 0).level)}</b>
+              </li>
+              <li>
+                <span>Total XP</span>
+                <b>{(progress?.xp ?? 0).toLocaleString()}</b>
+              </li>
+              <li>
+                <span>Badges</span>
+                <b>
+                  {Object.keys(progress?.badges ?? {}).length} / {BADGES.length}
+                </b>
+              </li>
+              <li>
+                <span>Longest streak</span>
+                <b>{progress?.streak.longest ?? 0} days</b>
+              </li>
+              <li>
+                <span>Explanations available</span>
+                <b>{HELP.length}</b>
+              </li>
+              <li>
+                <span>Guided tours</span>
+                <b>
+                  {(settings.tourSeen ?? []).length} / {TOURS.length} seen
+                </b>
+              </li>
+            </ul>
+            <div className="title-row" style={{ marginTop: 10 }}>
+              {ALL_TITLES.map((t) => (
+                <span key={t.level} className={`title-chip ${levelProgress(progress?.xp ?? 0).level >= t.level ? 'on' : ''}`}>
+                  {t.name}
+                </span>
+              ))}
             </div>
           </Card>
         </>
@@ -651,6 +793,7 @@ function SqlConsole() {
     setBusy(true)
     setError('')
     const r = await runQuery(sql)
+    useStore.getState().bumpStat('sqlQueries')
     setBusy(false)
     if (r.error) {
       setError(r.error)
